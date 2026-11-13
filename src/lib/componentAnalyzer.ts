@@ -5,6 +5,7 @@
 
 import { Node, Edge } from "reactflow";
 import { startCompile } from "../backend";
+import { groupDisplayLabel } from "./groupHandler";
 
 export interface DiracComponent {
   /** Unique index of the component. */
@@ -492,7 +493,7 @@ export async function analyzeComponents(
       const groupId = [...parentIds][0];
       const groupNode = nodes.find((n) => n.id === groupId);
       return {
-        label: groupNode?.data?.label || "Group",
+        label: groupDisplayLabel(groupNode),
         color: groupNode?.data?.color || "#6366f1",
         groupId,
       };
@@ -500,7 +501,7 @@ export async function analyzeComponents(
       // Nodes aus mehreren Gruppen → zusammengesetzter Name
       const groupNames = [...parentIds].map((gid) => {
         const g = nodes.find((n) => n.id === gid);
-        return g?.data?.label || "Group";
+        return groupDisplayLabel(g);
       });
       return {
         label: groupNames.join(" → "),

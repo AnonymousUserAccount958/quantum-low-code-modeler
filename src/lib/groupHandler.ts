@@ -13,6 +13,56 @@ export const GROUP_COLORS = [
 let colorIndex = 0;
 let groupCounter = 1;
 
+/**
+ * Marks the given groups and all groups they are nested in as "(modified)": a block
+ * added to the oracle inside "Grover Search Algorithm" changes both groups.
+ */
+export function markGroupsModified(nodes: Node[], groupIds: string[]): Node[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const marked = new Set<string>();
+  for (const start of groupIds) {
+    let current: string | undefined = start;
+    while (current && !marked.has(current)) {
+      marked.add(current);
+      current = byId.get(current)?.parentNode;
+    }
+  }
+  if (marked.size === 0) return nodes;
+  return nodes.map((n) =>
+    marked.has(n.id) && n.data?.modified !== true
+      ? { ...n, data: { ...n.data, modified: true } }
+      : n,
+  );
+}
+
+/** Fields that hold the angle(s) of a gate. */
+const ANGLE_FIELDS = new Set(["parameter", "theta", "phi", "lambda", "gamma"]);
+
+/**
+ * Marks the groups around a gate "(modified)" when its angle changed. Setting the
+ * first value of a new gate (no angle before) is not a change.
+ */
+export function markGroupsOfChangedAngle(
+  before: Node | undefined,
+  nodes: Node[],
+  values: Record<string, unknown>,
+): Node[] {
+  if (!before?.parentNode) return nodes;
+  const changed = Object.entries(values).some(
+    ([field, value]) =>
+      ANGLE_FIELDS.has(field) &&
+      before.data?.[field] !== undefined &&
+      String(before.data[field]) !== String(value),
+  );
+  return changed ? markGroupsModified(nodes, [before.parentNode]) : nodes;
+}
+
+/** Label of a group as shown in Math Mode, with "(modified)" for a changed group. */
+export function groupDisplayLabel(group: Node | undefined): string {
+  const label = String(group?.data?.label || "Group");
+  return group?.data?.modified === true ? `${label} (modified)` : label;
+}
+
 export function groupSelectedNodes(nodes: Node[], _edges: Edge[]): Node[] {
   // All selected nodes, including existing groups so that supergroups can be formed,
   // restricted to top level: nodes whose parent is also selected are left out.
@@ -205,7 +255,12 @@ export function handleNodeDropOnGroup(
   const origin = targetGroup
     ? absolutePosition(targetGroup, byId)
     : { x: 0, y: 0 };
-  return nodes.map((n) => {
+  // the group the node moves into, the group it leaves, and the groups around them
+  // are marked "(modified)"
+  const changedGroups = [targetGroup?.id, current.parentNode].filter(
+    Boolean,
+  ) as string[];
+  return markGroupsModified(nodes, changedGroups).map((n) => {
     if (n.id !== current.id) return n;
     return {
       ...n,

@@ -101,6 +101,7 @@ import {
   groupAt,
   groupSelectedNodes,
   handleNodeDropOnGroup,
+  markGroupsModified,
 } from "./lib/groupHandler";
 import UserCountPanel from "./components/modals/userAwareness";
 import VersioningPanel from "./components/modals/versioningModal";
@@ -3357,6 +3358,14 @@ If none apply, return { "algorithms": [] }.
 
       // Update local Zustand Store
       setNodes(newNode);
+
+      // a node added to a group marks that group and the groups around it "(modified)"
+      const groupId = (newNode as Node).parentNode;
+      if (groupId) {
+        useStore.setState((state: any) => ({
+          nodes: markGroupsModified(state.nodes, [groupId]),
+        }));
+      }
 
       // Update Yjs Collaborative Store
 

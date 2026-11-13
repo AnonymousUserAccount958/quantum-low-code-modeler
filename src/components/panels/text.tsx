@@ -1,4 +1,5 @@
 import { useStore } from "@/config/store";
+import { markGroupsOfChangedAngle } from "@/lib/groupHandler";
 import {
   AlgorithmNode,
   AncillaNode,
@@ -1436,6 +1437,15 @@ export const TextPanel = () => {
 
   function handleNumberChange(field: string, value: string) {
     if (selectedNode) {
+      // the node data is changed in place below, so the old angle is taken first:
+      // a changed angle of a gate inside a group marks the groups "(modified)"
+      const before = { ...selectedNode, data: { ...selectedNode.data } };
+      useStore.setState((state: any) => ({
+        nodes: markGroupsOfChangedAngle(before, state.nodes, {
+          [field]: value,
+        }),
+      }));
+
       if (field === "parameterType") {
         updateNodeValue(selectedNode.id, field, value);
 

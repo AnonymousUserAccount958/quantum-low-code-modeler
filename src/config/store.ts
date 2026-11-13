@@ -28,6 +28,7 @@ import {
 } from "@/lib/portTypes";
 import { Template } from "@/components/panels/categories";
 import { fileOrStringConnectionError } from "@/lib/dataTypeRules";
+import { markGroupsOfChangedAngle } from "@/lib/groupHandler";
 import { DomainProfile } from "@/components/modals/domainProfileModal";
 
 export type NodeData = {
@@ -1964,6 +1965,13 @@ export const useStore = create<RFState>()(
 
           console.log(updatedNodes);
 
+          // a changed angle of a gate inside a group marks the groups "(modified)"
+          updatedNodes = markGroupsOfChangedAngle(
+            nodes.find((n) => n.id === nodeId),
+            updatedNodes,
+            { [identifier]: nodeVal },
+          );
+
           return {
             nodes: updatedNodes,
             edges: edges,
@@ -1988,10 +1996,14 @@ export const useStore = create<RFState>()(
             nodes: structuredClone(nodes),
             edges: structuredClone(edges),
           };
-          const updatedNodes = nodes.map((node) =>
-            node.id === nodeId
-              ? { ...node, data: { ...node.data, ...values } }
-              : node,
+          const updatedNodes = markGroupsOfChangedAngle(
+            nodes.find((n) => n.id === nodeId),
+            nodes.map((node) =>
+              node.id === nodeId
+                ? { ...node, data: { ...node.data, ...values } }
+                : node,
+            ),
+            values,
           );
 
           return {

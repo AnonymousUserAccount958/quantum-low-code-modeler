@@ -34,9 +34,11 @@ import { awareness } from "@/yjs";
 
 const selector = (state: {
   nodes: Node[];
+  edges: Edge[];
   updateNodeValue: (nodeId: string, field: string, nodeVal: any) => void;
 }) => ({
   nodes: state.nodes,
+  edges: state.edges,
   updateNodeValue: state.updateNodeValue,
 });
 
@@ -311,7 +313,7 @@ function getProxyHandles(
 
 export const GroupNode = memo((node: Node) => {
   const { data, selected, id } = node;
-  const { nodes, updateNodeValue } = useStore(selector, shallow);
+  const { nodes, edges, updateNodeValue } = useStore(selector, shallow);
   const { setNodes, getNodes, getEdges, setEdges } = useReactFlow();
 
   const [isEditingLabel, setIsEditingLabel] = useState(false);
@@ -540,6 +542,16 @@ export const GroupNode = memo((node: Node) => {
   const statePreparation = data.statePreparation as
     | { quantumStateName: string; label: string; kind?: string }
     | undefined;
+  // A group opened from a block (circuit level) or recognized as a state preparation
+  // is marked "(modified)" once its content differs from that original, e.g. after a
+  // block was added to or removed from the group.
+  const isModified =
+    data.modified === true ||
+    (isCircuitLevel
+    ? circuitLevelChanged(node, nodes)
+    : statePreparation
+      ? statePreparationGroupChanged(node, nodes, edges)
+      : false);
   const collapseToPrepareState = useCallback(() => {
     const currentNodes = getNodes();
     const currentEdges = getEdges();
@@ -859,6 +871,21 @@ export const GroupNode = memo((node: Node) => {
                 title="Double-click to edit"
               >
                 {data.label || "Group"}
+              </span>
+            )}
+            {!isEditingLabel && isModified && (
+              <span
+                style={{
+                  fontSize: "14px",
+                  fontStyle: "italic",
+                  color,
+                  opacity: 0.8,
+                  flexShrink: 0,
+                  whiteSpace: "nowrap",
+                }}
+                title="The content of this group was changed, e.g. a block was added or removed"
+              >
+                (modified)
               </span>
             )}
           </div>

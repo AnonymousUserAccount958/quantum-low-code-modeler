@@ -7,6 +7,7 @@
 import type { Node } from "reactflow";
 import type { DiracStep } from "./utils/qasmToDirac";
 import { blockDescription } from "./blockExplanations";
+import { groupDisplayLabel } from "@/lib/groupHandler";
 import {
   GroverDiffuserNode,
   GroverNode,
@@ -366,11 +367,15 @@ export function buildStepTree(
       const grover = group ? groverSubprocess(group, nodes) : null;
       // a component of it that was opened further (e.g. the oracle's circuit level)
       const component = groverBlocks?.get(groupId);
+      // a group changed on the canvas (e.g. a gate added to the oracle) is shown as
+      // "(modified)" here as well
+      const modified = group?.data?.modified === true ? " (modified)" : "";
       items.push({
         type: "group",
-        label: grover
-          ? `${label} · ${grover.iterations} iteration${grover.iterations === 1 ? "" : "s"}`
-          : (component?.label ?? label),
+        label:
+          (grover
+            ? `${label} · ${grover.iterations} iteration${grover.iterations === 1 ? "" : "s"}`
+            : (component?.label ?? label)) + modified,
         description: grover
           ? GROVER_DESCRIPTION
           : (component?.description ??
