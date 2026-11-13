@@ -24,6 +24,7 @@ import {
   restoreCompactModel,
 } from "@/lib/circuitLevel";
 import { UniversalOracleNode } from "@/constants";
+import { GROUP_PADDING_BOTTOM } from "@/lib/makeRoom";
 import {
   collapseStatePreparationGroup,
   compactFormName,
@@ -41,6 +42,60 @@ const selector = (state: {
   edges: state.edges,
   updateNodeValue: state.updateNodeValue,
 });
+
+/**
+ * Asks before a circuit-level group collapses back into its block. An edited phase
+ * oracle (e.g. X gates added around it) keeps its new behaviour: the oracle block gets
+ * the states the edited circuit marks. Other edits are discarded. Null if cancelled.
+ */
+function confirmCircuitLevelCollapse(
+  group: Node,
+  nodes: Node[],
+  edges: Edge[],
+): { dataChanges?: Record<string, unknown> } | null {
+  if (!circuitLevelChanged(group, nodes)) return {};
+  const oracle = (group.data.circuitLevel.removedNodes as Node[]).find(
+    (r) => r.type === UniversalOracleNode,
+  );
+  const circuit =
+    oracle && (oracle.data?.mode ?? "phase") === "phase"
+      ? circuitOfGroup(group, nodes, edges)
+      : null;
+  const marked =
+    circuit && typeof circuit !== "string"
+      ? phaseOracleMarkedStates(circuit)
+      : null;
+  if (oracle && circuit && typeof circuit !== "string" && marked?.length) {
+    const ket = (x: number) =>
+      `|${x
+        .toString(2)
+        .padStart(circuit.numQubits, "0")
+        .split("")
+        .reverse()
+        .join("")}⟩ = ${x}`;
+    const after = marked.map(ket).join(", ");
+    if (
+      !window.confirm(
+        `The oracle circuit was changed: it now marks ${after} (before: ${oracle.data?.targetStates}). Collapse into the Grover Oracle with ${marked.length === 1 ? "this marked state" : "these marked states"}?`,
+      )
+    )
+      return null;
+    return { dataChanges: { targetStates: marked.join(", ") } };
+  }
+  if (
+    !window.confirm(
+      `The gates in this group were changed.${
+        oracle
+          ? typeof circuit === "string"
+            ? ` ${circuit}`
+            : " The circuit no longer only flips the sign of basis states, so it cannot be written as marked states of the oracle."
+          : ""
+      } Collapsing restores the original block and discards these changes. Continue?`,
+    )
+  )
+    return null;
+  return {};
+}
 
 const EXPANDED_MIN_WIDTH = 300;
 const EXPANDED_MIN_HEIGHT = 200;
@@ -357,16 +412,16 @@ export const GroupNode = memo((node: Node) => {
         ? ((n.style?.height as number) ?? n.height ?? 100)
         : (n.height ?? 100);
 
-    const minX = Math.min(...children.map((n) => n.position.x)) - 20;
-    const minY = Math.min(...children.map((n) => n.position.y)) - 40;
+    // children are positioned relative to the group's top left corner
     const maxX =
       Math.max(...children.map((n) => n.position.x + getNodeWidth(n))) + 20;
     const maxY =
-      Math.max(...children.map((n) => n.position.y + getNodeHeight(n))) + 20;
+      Math.max(...children.map((n) => n.position.y + getNodeHeight(n))) +
+      GROUP_PADDING_BOTTOM;
 
     return {
-      width: Math.max(maxX - minX, EXPANDED_MIN_WIDTH),
-      height: Math.max(maxY - minY, EXPANDED_MIN_HEIGHT),
+      width: Math.max(maxX, EXPANDED_MIN_WIDTH),
+      height: Math.max(maxY, EXPANDED_MIN_HEIGHT),
     };
   }, [id, getNodes]);
 
@@ -439,7 +494,19 @@ export const GroupNode = memo((node: Node) => {
           n.data?.circuitLevel && isDescendantOf(n, id, currentNodes),
       );
       if (!inner) break;
-      const restored = restoreCompactModel(inner, currentNodes, currentEdges);
+      // an edited oracle inside the subprocess keeps its new marked states
+      const confirmed = confirmCircuitLevelCollapse(
+        inner,
+        currentNodes,
+        currentEdges,
+      );
+      if (!confirmed) return;
+      const restored = restoreCompactModel(
+        inner,
+        currentNodes,
+        currentEdges,
+        confirmed.dataChanges,
+      );
       currentNodes = restored.nodes;
       currentEdges = restored.edges;
     }
@@ -474,51 +541,13 @@ export const GroupNode = memo((node: Node) => {
     const currentEdges = getEdges();
     const self = currentNodes.find((n) => n.id === id);
     if (!self) return;
-    let dataChanges: Record<string, unknown> | undefined;
-    if (circuitLevelChanged(self, currentNodes)) {
-      // an edited phase oracle (e.g. X gates added around it) keeps its new behaviour:
-      // the oracle block gets the states the edited circuit marks
-      const oracle = (self.data.circuitLevel.removedNodes as Node[]).find(
-        (r) => r.type === UniversalOracleNode,
-      );
-      const circuit =
-        oracle && (oracle.data?.mode ?? "phase") === "phase"
-          ? circuitOfGroup(self, currentNodes, currentEdges)
-          : null;
-      const marked =
-        circuit && typeof circuit !== "string"
-          ? phaseOracleMarkedStates(circuit)
-          : null;
-      if (oracle && circuit && typeof circuit !== "string" && marked?.length) {
-        const ket = (x: number) =>
-          `|${x
-            .toString(2)
-            .padStart(circuit.numQubits, "0")
-            .split("")
-            .reverse()
-            .join("")}⟩ = ${x}`;
-        const after = marked.map(ket).join(", ");
-        if (
-          !window.confirm(
-            `The oracle circuit was changed: it now marks ${after} (before: ${oracle.data?.targetStates}). Collapse into the Grover Oracle with ${marked.length === 1 ? "this marked state" : "these marked states"}?`,
-          )
-        )
-          return;
-        dataChanges = { targetStates: marked.join(", ") };
-      } else if (
-        !window.confirm(
-          `The gates in this group were changed.${
-            oracle
-              ? typeof circuit === "string"
-                ? ` ${circuit}`
-                : " The circuit no longer only flips the sign of basis states, so it cannot be written as marked states of the oracle."
-              : ""
-          } Collapsing restores the original block and discards these changes. Continue?`,
-        )
-      ) {
-        return;
-      }
-    }
+    const confirmed = confirmCircuitLevelCollapse(
+      self,
+      currentNodes,
+      currentEdges,
+    );
+    if (!confirmed) return;
+    const { dataChanges } = confirmed;
     const result = restoreCompactModel(
       self,
       currentNodes,

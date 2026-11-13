@@ -43,7 +43,7 @@ import { parseQasm, simulate } from "@/components/utils/qasmToDirac";
 import { detectGroverSegments } from "@/components/utils/groverSegments";
 import { circuitSignature, qasmToNodes, type QasmNodes } from "./qasmToNodes";
 import { expandGroverToSubprocess, readGroverSettings } from "./expandGrover";
-import { fitGroupsAround, makeRoom } from "./makeRoom";
+import { fitGroupsAround, GROUP_PADDING_BOTTOM, makeRoom } from "./makeRoom";
 import { expansionFor, isBasisEncoding } from "./statePreparationGroups";
 
 /** Blocks that have a circuit level. */
@@ -665,7 +665,7 @@ export function buildCircuitLevel(
           (n) =>
             n.position.y + 110 * Math.max(1, n.data?.identifiers?.length ?? 1),
         ),
-      ) + 30;
+      ) + GROUP_PADDING_BOTTOM;
     inner = inner.map((n) => ({
       ...n,
       parentNode: groupId,

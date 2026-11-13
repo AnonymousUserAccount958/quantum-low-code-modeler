@@ -58,6 +58,9 @@ export function makeRoom(
 /** Space between the content of a group and its border. */
 const GROUP_PADDING = 30;
 
+/** Space between the lowest node in a group and the bottom border of the group. */
+export const GROUP_PADDING_BOTTOM = 60;
+
 const sizeOf = (n: Node) => ({
   width: (n.style?.width as number) ?? n.width ?? 220,
   height: (n.style?.height as number) ?? n.height ?? 200,
@@ -89,7 +92,7 @@ export function fitGroupsAround(
     );
     const { width, height } = sizeOf(group);
     const newWidth = Math.max(width, right + GROUP_PADDING);
-    const newHeight = Math.max(height, bottom + GROUP_PADDING);
+    const newHeight = Math.max(height, bottom + GROUP_PADDING_BOTTOM);
     if (newWidth !== width || newHeight !== height) {
       result = result.map((n) =>
         n.id === parentId

@@ -1,5 +1,6 @@
 import { Node, Edge } from "reactflow";
 import { v4 as uuid } from "uuid";
+import { fitGroupsAround, GROUP_PADDING_BOTTOM } from "./makeRoom";
 
 export const GROUP_COLORS = [
   "#6366f1",
@@ -100,7 +101,7 @@ export function groupSelectedNodes(nodes: Node[], _edges: Edge[]): Node[] {
           (n.positionAbsolute?.y ?? n.position.y) +
           ((n.style?.height as number) ?? n.height ?? 100),
       ),
-    ) + 30;
+    ) + GROUP_PADDING_BOTTOM;
 
   const groupWidth = maxX - minX;
   const groupHeight = maxY - minY;
@@ -248,7 +249,9 @@ export function handleNodeDropOnGroup(
     dragY + dragH / 2,
     current.id,
   );
-  if (targetGroup?.id === current.parentNode) return nodes;
+  // moved inside its group: the group grows if the node now reaches over its border
+  if (targetGroup?.id === current.parentNode)
+    return fitGroupsAround(nodes, current.parentNode);
   // no target and no existing parent: do nothing and return the SAME reference
   if (!targetGroup && !current.parentNode) return nodes;
 
@@ -260,7 +263,7 @@ export function handleNodeDropOnGroup(
   const changedGroups = [targetGroup?.id, current.parentNode].filter(
     Boolean,
   ) as string[];
-  return markGroupsModified(nodes, changedGroups).map((n) => {
+  const moved = markGroupsModified(nodes, changedGroups).map((n) => {
     if (n.id !== current.id) return n;
     return {
       ...n,
@@ -275,6 +278,9 @@ export function handleNodeDropOnGroup(
           { x: dragX, y: dragY },
     };
   });
+  // the group (and the groups around it) grow until the node fits inside; a group that
+  // gets wider pushes the nodes right of it away
+  return fitGroupsAround(moved, targetGroup?.id);
 }
 
 /** Absolute position of a node, through the groups it is nested in. */
@@ -377,15 +383,15 @@ export function expandGroupsAround(
   const bounds = (groupId: string) => {
     const children = nodes.filter((n) => n.parentNode === groupId);
     if (children.length === 0) return null;
-    const minX = Math.min(...children.map((n) => n.position.x)) - 20;
-    const minY = Math.min(...children.map((n) => n.position.y)) - 40;
+    // children are positioned relative to the group's top left corner
     const maxX =
       Math.max(...children.map((n) => n.position.x + size(n, "width"))) + 20;
     const maxY =
-      Math.max(...children.map((n) => n.position.y + size(n, "height"))) + 20;
+      Math.max(...children.map((n) => n.position.y + size(n, "height"))) +
+      GROUP_PADDING_BOTTOM;
     return {
-      width: Math.max(maxX - minX, 300),
-      height: Math.max(maxY - minY, 200),
+      width: Math.max(maxX, 300),
+      height: Math.max(maxY, 200),
     };
   };
 

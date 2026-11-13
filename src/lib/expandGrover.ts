@@ -14,7 +14,7 @@
 
 import { Edge, MarkerType, Node } from "reactflow";
 import { v4 as uuid } from "uuid";
-import { fitGroupsAround, makeRoom } from "./makeRoom";
+import { fitGroupsAround, GROUP_PADDING_BOTTOM, makeRoom } from "./makeRoom";
 import {
   GroupNode,
   GroverDiffuserNode,
@@ -30,7 +30,7 @@ const SPACING_X = 400;
 /** Padding of the blocks inside the group (the group header is 36px high). */
 const PADDING_X = 30;
 const PADDING_TOP = 60;
-const PADDING_BOTTOM = 30;
+const PADDING_BOTTOM = GROUP_PADDING_BOTTOM;
 /** Size of the compact Grover node and the tallest block (Prepare State). */
 const GROVER_WIDTH = 320;
 const BLOCK_WIDTH = 320;
@@ -356,8 +356,16 @@ export function collapseGroverSubprocess(
   const oracles = children.filter((n) => n.type === UniversalOracleNode);
   const size = parseInt(String(prepare?.data?.size ?? ""), 10);
   if (Number.isInteger(size) && size > 0) data.numQubits = size;
-  if (oracles[0]?.data?.targetStates !== undefined) {
-    data.targetStates = String(oracles[0].data.targetStates);
+  // an oracle whose marked states were edited (e.g. on its circuit level) wins over the
+  // unchanged copies of the other iterations
+  const edited =
+    oracles.find(
+      (o) =>
+        o.data?.targetStates !== undefined &&
+        String(o.data.targetStates) !== String(snapshot.data?.targetStates ?? ""),
+    ) ?? oracles[0];
+  if (edited?.data?.targetStates !== undefined) {
+    data.targetStates = String(edited.data.targetStates);
   }
   // keep "Auto" unless the subprocess no longer has the automatic number of iterations
   const settings = readGroverSettings({ ...data, numIterations: "" });

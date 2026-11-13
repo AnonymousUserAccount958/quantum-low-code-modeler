@@ -103,6 +103,7 @@ import {
   handleNodeDropOnGroup,
   markGroupsModified,
 } from "./lib/groupHandler";
+import { fitGroupsAround } from "./lib/makeRoom";
 import UserCountPanel from "./components/modals/userAwareness";
 import VersioningPanel from "./components/modals/versioningModal";
 import { EdgeChange } from "@xyflow/react";
@@ -3365,6 +3366,23 @@ If none apply, return { "algorithms": [] }.
         useStore.setState((state: any) => ({
           nodes: markGroupsModified(state.nodes, [groupId]),
         }));
+        // once the new node has its size, the group grows until it fits inside and
+        // pushes the nodes right of it away
+        let frames = 0;
+        const fit = () => {
+          const added = useStore
+            .getState()
+            .nodes.find((n: Node) => n.id === newNode.id);
+          if (!added) return;
+          if (added.width == null && frames++ < 10) {
+            requestAnimationFrame(fit);
+            return;
+          }
+          useStore.setState((state: any) => ({
+            nodes: fitGroupsAround(state.nodes, groupId),
+          }));
+        };
+        requestAnimationFrame(fit);
       }
 
       // Update Yjs Collaborative Store
