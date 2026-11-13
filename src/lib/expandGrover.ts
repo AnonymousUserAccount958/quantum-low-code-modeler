@@ -14,6 +14,7 @@
 
 import { Edge, MarkerType, Node } from "reactflow";
 import { v4 as uuid } from "uuid";
+import { fitGroupsAround, makeRoom } from "./makeRoom";
 import {
   GroupNode,
   GroverDiffuserNode,
@@ -202,21 +203,6 @@ function buildBlocks(
   return { blocks, edges };
 }
 
-/** Moves the nodes right of `x` (same parent) by `dx` to make or give back room. */
-function shiftRight(
-  nodes: Node[],
-  parentNode: string | undefined,
-  x: number,
-  dx: number,
-): Node[] {
-  if (dx === 0) return nodes;
-  return nodes.map((n) =>
-    n.parentNode === parentNode && n.position.x > x
-      ? { ...n, position: { ...n.position, x: n.position.x + dx } }
-      : n,
-  );
-}
-
 /** Replaces references to `fromId` in data.inputs / data.children with `toIds`. */
 function replaceReferences(
   nodes: Node[],
@@ -297,12 +283,7 @@ export function expandGroverToSubprocess(
   };
 
   let others = nodes.filter((n) => n.id !== grover.id);
-  others = shiftRight(
-    others,
-    grover.parentNode,
-    grover.position.x,
-    width - GROVER_WIDTH,
-  );
+  others = makeRoom(others, grover, width - GROVER_WIDTH);
   others = replaceReferences(others, grover.id, last.id, [groupId]);
 
   const keptEdges = edges
@@ -314,8 +295,9 @@ export function expandGroverToSubprocess(
     );
 
   return {
-    // React Flow requires a parent to come before its children
-    nodes: [...others, group, ...blocks],
+    // React Flow requires a parent to come before its children; the groups around the
+    // Grover node grow until the subprocess fits inside
+    nodes: fitGroupsAround([...others, group, ...blocks], grover.parentNode),
     edges: [...keptEdges, ...innerEdges],
     groupId,
   };
@@ -407,12 +389,7 @@ export function collapseGroverSubprocess(
 
   const groupWidth = (group.style?.width as number) ?? group.width ?? GROVER_WIDTH;
   let others = nodes.filter((n) => !isInside(n.id));
-  others = shiftRight(
-    others,
-    group.parentNode,
-    group.position.x,
-    -(groupWidth - GROVER_WIDTH),
-  );
+  others = makeRoom(others, group, -(groupWidth - GROVER_WIDTH));
   for (const child of children) {
     others = replaceReferences(others, child.id, grover.id, []);
   }

@@ -10,7 +10,11 @@ import { useStore } from "@/config/store";
 import { shallow } from "zustand/shallow";
 import { cn } from "@/lib/utils";
 import OutputPort from "../utils/outputPort";
-import { AlertCircle } from "lucide-react";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
+import { circuitBlockedReason } from "@/lib/circuitReadiness";
+import { AlertCircle, AlertTriangle } from "lucide-react";
+import { qaoaInputIssues } from "@/lib/qaoaRules";
+import { parseNumbers } from "@/lib/dataTypeRules";
 import { findDuplicateOutputIdentifiers } from "../utils/utils";
 import { classicalConstructColor } from "@/constants";
 import { awareness } from "@/yjs";
@@ -38,7 +42,6 @@ export const QAOANode = memo((node: Node) => {
   const [outputIdentifierError, setOutputIdentifierError] = useState(false);
   const [sizeError, setSizeError] = useState(false);
   const [startsWithDigitError, setStartsWithDigitError] = useState(false);
-  const [paramError, setParamError] = useState(false);
 
   useEffect(() => {
     const identifier = data.outputIdentifier || "";
@@ -63,18 +66,14 @@ export const QAOANode = memo((node: Node) => {
     const rawGamma = getConnectedValue(`classicalHandleQAOAInput1${id}`);
     const rawBeta = getConnectedValue(`classicalHandleQAOAInput2${id}`);
 
-    const strGamma =
-      rawGamma != null
-        ? Array.isArray(rawGamma)
-          ? rawGamma.join(",")
-          : String(rawGamma)
-        : "";
-    const strBeta =
-      rawBeta != null
-        ? Array.isArray(rawBeta)
-          ? rawBeta.join(",")
-          : String(rawBeta)
-        : "";
+    // the backend splits Gamma and Beta at commas, so "[0.5, 0.2]" is passed as "0.5,0.2"
+    const toParam = (raw: any) => {
+      if (raw == null) return "";
+      const text = Array.isArray(raw) ? raw.join(",") : String(raw);
+      return parseNumbers(text)?.join(",") ?? text;
+    };
+    const strGamma = toParam(rawGamma);
+    const strBeta = toParam(rawBeta);
 
     if (data.gamma !== strGamma) {
       updateNodeValue(id, "gamma", strGamma);
@@ -82,23 +81,17 @@ export const QAOANode = memo((node: Node) => {
     if (data.beta !== strBeta) {
       updateNodeValue(id, "beta", strBeta);
     }
+    // nodes: the values change in the connected Array blocks, not in the edges
+  }, [nodes, edges, id, data.gamma, data.beta, updateNodeValue]);
 
-    const parseLength = (val: any) => {
-      if (val == null || val === "") return 0;
-      if (Array.isArray(val)) return val.length;
-      return String(val)
-        .split(",")
-        .filter((x: string) => x.trim() !== "").length;
-    };
-
-    const gammaLen = parseLength(rawGamma);
-    const betaLen = parseLength(rawBeta);
-
-    const gammaMismatch = rawGamma != null && strGamma !== "" && gammaLen !== p;
-    const betaMismatch = rawBeta != null && strBeta !== "" && betaLen !== p;
-
-    setParamError(gammaMismatch || betaMismatch);
-  }, [edges, id, p, data.gamma, data.beta, updateNodeValue]);
+  // errors keep "▸ Circuit" disabled; warnings only point out likely mistakes
+  const inputIssues = qaoaInputIssues(node, nodes, edges);
+  const identifierErrors = [
+    ...(startsWithDigitError ? ["Identifier starts with a number."] : []),
+    ...(outputIdentifierError ? ["Identifier is not unique."] : []),
+  ];
+  const errors = [...identifierErrors, ...inputIssues.errors];
+  const warnings = inputIssues.warnings;
 
   useEffect(() => {
     updateNodeInternals(id);
@@ -164,21 +157,30 @@ export const QAOANode = memo((node: Node) => {
           }}
         >
           {/* Error Alerts Multi-Panel */}
-          {(outputIdentifierError || startsWithDigitError || paramError) && (
+          {(errors.length > 0 || warnings.length > 0) && (
             <div className="absolute top-2 right-[-40px] group z-20">
-              <AlertCircle className="text-red-600 w-5 h-5" />
-              <div className="absolute top-5 left-[30px] z-10 bg-white text-xs text-red-600 border border-red-400 px-3 py-2 rounded shadow min-w-[200px] flex flex-col gap-1">
-                {startsWithDigitError && (
-                  <div>• Identifier starts with a number.</div>
+              {errors.length > 0 ? (
+                <AlertCircle className="text-red-600 w-5 h-5" />
+              ) : (
+                <AlertTriangle className="text-amber-500 w-5 h-5" />
+              )}
+              {/* errors stay visible; warnings only (e.g. inputs not connected yet) on hover */}
+              <div
+                className={cn(
+                  "absolute top-5 left-[30px] z-10 bg-white text-xs border border-gray-300 px-3 py-2 rounded shadow w-[260px] flex-col gap-1",
+                  errors.length > 0 ? "flex" : "hidden group-hover:flex",
                 )}
-                {outputIdentifierError && (
-                  <div>• Identifier is not unique.</div>
-                )}
-                {paramError && (
-                  <div>
-                    • Parameter array length does not match layer count (p).
+              >
+                {errors.map((msg) => (
+                  <div key={`e-${msg}`} className="text-red-600">
+                    • {msg}
                   </div>
-                )}
+                ))}
+                {warnings.map((msg) => (
+                  <div key={`w-${msg}`} className="text-amber-600">
+                    ⚠ {msg}
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -201,6 +203,13 @@ export const QAOANode = memo((node: Node) => {
               >
                 QAOA
               </span>
+              <CircuitLevelButton
+                nodeId={id}
+                label="QAOA"
+                disabledReason={
+                  circuitBlockedReason(node, nodes, edges) ?? undefined
+                }
+              />
             </div>
           </div>
 

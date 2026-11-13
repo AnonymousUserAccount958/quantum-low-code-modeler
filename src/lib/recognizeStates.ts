@@ -176,8 +176,8 @@ function contiguousRuns(qubits: number[]): number[][] {
  * 2. Uniform superposition: neighbouring remaining qubits that each start in |+⟩
  *    (e.g. an H gate on every qubit), at least two.
  * 3. Basis encoding: neighbouring remaining qubits that start with X gates, from the
- *    first to the last qubit in |1⟩ (qubits in |0⟩ in between belong to the number), at
- *    least two qubits.
+ *    first qubit of the run (the least significant bit) to the last qubit in |1⟩
+ *    (qubits in |0⟩ below or in between belong to the number), at least two in |1⟩.
  */
 export function detectStatePreparations(
   numQubits: number,
@@ -310,7 +310,9 @@ export function detectStatePreparations(
   for (const run of contiguousRuns(remaining)) {
     const ones = run.filter(isOne);
     if (ones.length < 2) continue;
-    const qubits = run.filter((q) => q >= ones[0] && q <= ones.at(-1)!);
+    // the number starts at the first qubit of the run: qubits in |0⟩ below the first
+    // |1⟩ are its low zero bits (6 = 110₂ is |011⟩ on q0..q2, not 3 = |11⟩ on q1, q2)
+    const qubits = run.filter((q) => q <= ones.at(-1)!);
     const value = qubits.reduce((v, q, k) => (isOne(q) ? v + 2 ** k : v), 0);
     qubits.forEach((q) => used.add(q));
     chosen.push({

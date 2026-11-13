@@ -18,6 +18,9 @@ import { findDuplicateOutputIdentifiers } from "../utils/utils";
 import { awareness } from "@/yjs";
 import { expansionFor, isBasisEncoding } from "@/lib/statePreparationGroups";
 import { expandStatePreparation } from "@/lib/circuitLevel";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
+import { circuitBlockedReason } from "@/lib/circuitReadiness";
+import { displayInputType, encodingKind } from "@/lib/dataTypeRules";
 
 const selector = (state: {
   selectedNode: Node | null;
@@ -122,6 +125,11 @@ export const StatePreparationNode = memo((node: Node) => {
     node.data.label === "Prepare State" || isBasisEncoding(node.data)
       ? expansionFor(node, nodes, edges)
       : null;
+  // an encoding only has a circuit once a value it can encode is connected (e.g. a
+  // unitary 2^n x 2^n matrix for Matrix Encoding), see circuitReadiness.ts
+  const kind = encodingKind(node);
+  const circuitDisabledReason =
+    circuitBlockedReason(node, nodes, edges) ?? undefined;
   const expandToCircuit = () => {
     const currentNodes = reactFlow.getNodes();
     const currentEdges = reactFlow.getEdges();
@@ -594,20 +602,36 @@ export const StatePreparationNode = memo((node: Node) => {
                 </div>
               </div>
 
-              {expandCircuit && (
-                <button
-                  onClick={expandToCircuit}
-                  disabled={typeof expandCircuit === "string"}
-                  className="nodrag flex-shrink-0 ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full border border-blue-700 text-blue-900 bg-white/70 hover:bg-white transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={
-                    typeof expandCircuit === "string"
-                      ? expandCircuit
-                      : `Show the circuit-level model of ${expandCircuit.state.label}: a group with only the qubits and gates. Collapse the group to get the compact blocks back.`
-                  }
-                >
-                  ▸ Circuit
-                </button>
-              )}
+              {/* other encodings (and states without a known circuit) open from the
+                  compiled model; not custom blocks, whose circuit is user-defined */}
+              {/* also when the circuit is known but not ready yet (e.g. Prepare State
+                  without a size): then the button is disabled with the reason */}
+              {(!expandCircuit ||
+                typeof expandCircuit === "string" ||
+                circuitDisabledReason) &&
+                node.data.label !== "Custom Encoding" &&
+                node.data.quantumStateName !== "Custom State" && (
+                  <CircuitLevelButton
+                    nodeId={node.id}
+                    disabledReason={circuitDisabledReason}
+                    label={String(
+                      node.data.label === "Encode Value"
+                        ? (node.data.encodingType ?? "encoding")
+                        : node.data.label,
+                    )}
+                  />
+                )}
+              {expandCircuit &&
+                typeof expandCircuit !== "string" &&
+                !circuitDisabledReason && (
+                  <button
+                    onClick={expandToCircuit}
+                    className="nodrag flex-shrink-0 ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full border border-blue-700 text-blue-900 bg-white/70 hover:bg-white transition-colors whitespace-nowrap"
+                    title={`Show the circuit-level model of ${expandCircuit.state.label}: a group with only the qubits and gates. Collapse the group to get the compact blocks back.`}
+                  >
+                    ▸ Circuit
+                  </button>
+                )}
             </div>
           </div>
 
@@ -786,7 +810,15 @@ export const StatePreparationNode = memo((node: Node) => {
                       {node.data.inputs[0]?.outputIdentifier || "Value"}
                     </span>
                     <span className="text-[10px] text-gray-600">
-                      type: {node.data.inputTypes[0]?.toLowerCase() ?? "number"}
+                      type:{" "}
+                      {kind === "basis"
+                        ? "number or array"
+                        : kind && kind !== "custom"
+                          ? "array"
+                          : displayInputType(
+                              node.data.inputTypes[0]?.toLowerCase() ??
+                                "number",
+                            )}
                     </span>
                   </div>
                 </div>

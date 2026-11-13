@@ -9,6 +9,7 @@ import {
 import { useStore } from "@/config/store";
 import { shallow } from "zustand/shallow";
 import { awareness } from "@/yjs";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
 
 const selector = (state: {
   selectedNode: Node | null;
@@ -232,6 +233,7 @@ export const InverseQFTNode = memo((node: Node) => {
             >
               {data.label}
             </span>
+            <CircuitLevelButton nodeId={id} label="inverse QFT" />
           </div>
         </div>
 

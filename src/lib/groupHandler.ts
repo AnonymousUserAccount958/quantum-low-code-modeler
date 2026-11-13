@@ -1,7 +1,7 @@
 import { Node, Edge } from "reactflow";
 import { v4 as uuid } from "uuid";
 
-const GROUP_COLORS = [
+export const GROUP_COLORS = [
   "#6366f1",
   "#8b5cf6",
   "#ec4899",
@@ -174,80 +174,110 @@ export function handleNodeDropOnGroup(
   // group nodes themselves are ignored
   if (draggedNode.type === "groupNode") return nodes;
 
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const stored = byId.get(draggedNode.id);
+  const current = stored ? { ...stored, ...draggedNode } : draggedNode;
+
   // absolute position of the dragged node
-  const dragX = draggedNode.positionAbsolute?.x ?? draggedNode.position.x;
-  const dragY = draggedNode.positionAbsolute?.y ?? draggedNode.position.y;
-  const dragW = draggedNode.width ?? 100;
-  const dragH = draggedNode.height ?? 100;
+  const { x: dragX, y: dragY } = absolutePosition(current, byId);
+  const dragW = current.width ?? 100;
+  const dragH = current.height ?? 100;
 
-  // center point of the dragged node
-  const cx = dragX + dragW / 2;
-  const cy = dragY + dragH / 2;
+  // a locked group keeps its nodes
+  const parentGroup = current.parentNode
+    ? byId.get(current.parentNode)
+    : undefined;
+  if (parentGroup?.data?.locked) return nodes;
 
-  // find the group node underneath that center point
-  const targetGroup = nodes.find((n) => {
-    if (n.type !== "groupNode" || n.id === draggedNode.parentNode) return false;
-    if (n.data?.collapsed) return false;
-    if (n.data?.locked) return false; // locked groups do not accept new nodes
+  // the innermost group under the center point of the node: a node dropped into a
+  // group nested in another one (e.g. the circuit level of the oracle inside "Grover
+  // Search Algorithm") belongs to the inner group, so it can be wired to the gates there
+  const targetGroup = groupAt(
+    nodes,
+    dragX + dragW / 2,
+    dragY + dragH / 2,
+    current.id,
+  );
+  if (targetGroup?.id === current.parentNode) return nodes;
+  // no target and no existing parent: do nothing and return the SAME reference
+  if (!targetGroup && !current.parentNode) return nodes;
 
-    const gx = n.positionAbsolute?.x ?? n.position.x;
-    const gy = n.positionAbsolute?.y ?? n.position.y;
+  const origin = targetGroup
+    ? absolutePosition(targetGroup, byId)
+    : { x: 0, y: 0 };
+  return nodes.map((n) => {
+    if (n.id !== current.id) return n;
+    return {
+      ...n,
+      parentNode: targetGroup?.id,
+      extent: undefined, // deliberately no extent: parent
+      position: targetGroup
+        ? {
+            x: Math.max(0, dragX - origin.x),
+            y: Math.max(40, dragY - origin.y),
+          }
+        : // dragged out of every group: the absolute position
+          { x: dragX, y: dragY },
+    };
+  });
+}
+
+/** Absolute position of a node, through the groups it is nested in. */
+function absolutePosition(
+  node: Node,
+  byId: Map<string, Node>,
+): { x: number; y: number } {
+  if (node.positionAbsolute) return node.positionAbsolute;
+  let x = node.position.x;
+  let y = node.position.y;
+  let parent = node.parentNode ? byId.get(node.parentNode) : undefined;
+  const seen = new Set<string>();
+  while (parent && !seen.has(parent.id)) {
+    seen.add(parent.id);
+    x += parent.position.x;
+    y += parent.position.y;
+    parent = parent.parentNode ? byId.get(parent.parentNode) : undefined;
+  }
+  return { x, y };
+}
+
+/**
+ * The innermost open group whose area contains the point (x, y), ignoring `excludeId`
+ * and the groups inside it. Collapsed, hidden and locked groups do not take nodes.
+ */
+export function groupAt(
+  nodes: Node[],
+  x: number,
+  y: number,
+  excludeId?: string,
+): Node | undefined {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const depth = (n: Node) => {
+    let d = 0;
+    let parent = n.parentNode ? byId.get(n.parentNode) : undefined;
+    while (parent && d < 50) {
+      if (parent.id === excludeId) return -1; // inside the dragged node itself
+      d++;
+      parent = parent.parentNode ? byId.get(parent.parentNode) : undefined;
+    }
+    return d;
+  };
+  let best: Node | undefined;
+  let bestDepth = -1;
+  for (const n of nodes) {
+    if (n.type !== "groupNode" || n.id === excludeId) continue;
+    if (n.hidden || n.data?.collapsed || n.data?.locked) continue;
+    const { x: gx, y: gy } = absolutePosition(n, byId);
     const gw = (n.style?.width as number) ?? n.width ?? 300;
     const gh = (n.style?.height as number) ?? n.height ?? 200;
-
-    return cx >= gx && cx <= gx + gw && cy >= gy && cy <= gy + gh;
-  });
-
-  // no target and no existing parent: do nothing and return the SAME reference
-  if (!targetGroup && !draggedNode.parentNode) return nodes;
-
-  // add the node to the group
-  if (targetGroup) {
-    const gx = targetGroup.positionAbsolute?.x ?? targetGroup.position.x;
-    const gy = targetGroup.positionAbsolute?.y ?? targetGroup.position.y;
-    return nodes.map((n) => {
-      if (n.id !== draggedNode.id) return n;
-      return {
-        ...n,
-        parentNode: targetGroup.id,
-        extent: undefined, // deliberately no extent: parent
-        position: {
-          x: Math.max(0, dragX - gx),
-          y: Math.max(40, dragY - gy),
-        },
-      };
-    });
-  }
-
-  // node dragged out of a group: it had a parentNode and now lies outside of it
-  if (draggedNode.parentNode) {
-    const parentGroup = nodes.find((g) => g.id === draggedNode.parentNode);
-    // locked group: the node stays inside
-    if (parentGroup?.data?.locked) return nodes;
-    if (parentGroup) {
-      const gx = parentGroup.positionAbsolute?.x ?? parentGroup.position.x;
-      const gy = parentGroup.positionAbsolute?.y ?? parentGroup.position.y;
-      const gw =
-        (parentGroup.style?.width as number) ?? parentGroup.width ?? 300;
-      const gh =
-        (parentGroup.style?.height as number) ?? parentGroup.height ?? 200;
-      // still inside: nothing to do
-      if (cx >= gx && cx <= gx + gw && cy >= gy && cy <= gy + gh) return nodes;
-      // outside: detach from the group and use the absolute position
-      return nodes.map((n) => {
-        if (n.id !== draggedNode.id) return n;
-        return {
-          ...n,
-          parentNode: undefined,
-          extent: undefined,
-          // absolute position = relative position + group position
-          position: { x: dragX, y: dragY },
-        };
-      });
+    if (x < gx || x > gx + gw || y < gy || y > gy + gh) continue;
+    const d = depth(n);
+    if (d > bestDepth) {
+      best = n;
+      bestDepth = d;
     }
   }
-
-  return nodes;
+  return best;
 }
 
 /**

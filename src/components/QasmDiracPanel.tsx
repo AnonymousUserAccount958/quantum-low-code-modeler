@@ -4,6 +4,7 @@
  */
 
 import { useMemo, useState, useEffect, useRef } from "react";
+import type { Node } from "reactflow";
 import { createPortal } from "react-dom";
 import {
   qasmToDirac,
@@ -22,10 +23,13 @@ import {
   getMultiQubitPersistence,
 } from "./BlochSphere";
 import { GroverInfoBox } from "./GroverInfoBox";
+import { QubitOrderNote, basisValue, basisValueSuffix } from "./QubitOrder";
+import { withOpenedBlocks } from "@/lib/circuitLevel";
 import { MathCircuitEditor } from "./MathCircuitEditor";
 import {
   basicsTopics,
   buildStepTree,
+  groverFromCanvas,
   type StepGroup,
   type StepTreeItem,
 } from "./mathExplanations";
@@ -36,45 +40,14 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import { measuredQubits } from "./utils/measuredQubits";
 
 /**
- * Extracts the global leqo_reg qubit indices of the input of the (last) measurement node
- * in the circuit from the raw QASM. Used to show a hint in the Dirac notation about which
- * qubits actually encode the result (e.g. a sum), instead of making the user work that out
- * from the full register state.
- *
- * Approach: find the block between "@leqo.input 0" and the corresponding
- * "let <var> = leqo_reg[{a, b, c}];" line inside the measure node section (recognizable by
- * "measure ...;") and extract the indices. Returns null if no measurement node is found in
- * the QASM or the structure does not match the expected pattern.
+ * The qubits the measurements of the circuit read (only the measured part, e.g. the
+ * result register of an adder), see measuredQubits.ts. Used to show the result on these
+ * qubits ("|101⟩ = 5") instead of the whole register ("|011101⟩ = 46").
  */
-function extractMeasurementResultIndices(qasmText: string): number[] | null {
-  if (!qasmText) return null;
-
-  // Walk all node sections and pick the last one containing a "measure" statement.
-  const sectionRegex =
-    /\/\* Start node ([\w-]+) \*\/([\s\S]*?)\/\* End node \1 \*\//g;
-  let match: RegExpExecArray | null;
-  let lastMeasureSection: string | null = null;
-
-  while ((match = sectionRegex.exec(qasmText)) !== null) {
-    const section = match[2];
-    if (/\bmeasure\b/.test(section)) {
-      lastMeasureSection = section;
-    }
-  }
-
-  if (!lastMeasureSection) return null;
-
-  // Inside that section, the first direct "let <var> = leqo_reg[{a, b, c}];" assignment
-  // before the "measure" line is the input register of the measurement.
-  const directRegex = /let\s+(\S+)\s*=\s*leqo_reg\[\{([^}]*)\}\];/;
-  const directMatch = lastMeasureSection.match(directRegex);
-  if (!directMatch) return null;
-
-  const indices = directMatch[2].split(",").map((s) => parseInt(s.trim(), 10));
-  return indices.every((n) => !Number.isNaN(n)) ? indices : null;
-}
+const extractMeasurementResultIndices = measuredQubits;
 
 type QasmProps = {
   qasm: string;
@@ -884,10 +857,30 @@ export function QasmDiracPanel(props: Props) {
 
   // Steps grouped per canvas node (Grover operator, basis encoding, ...), shown collapsed.
   const nodes = useStore((state) => state.nodes);
+  // Opening a block on the canvas (e.g. the Grover Oracle becomes its gates) removes the
+  // block node while the steps still refer to it until the model is recompiled. The
+  // block is restored from the snapshot of its group, so the step tree (and which of its
+  // groups are open) stays the same, also after this panel was mounted again.
   const stepTree = useMemo(
-    () => (stepsResult ? buildStepTree(stepsResult.steps, nodes) : []),
+    () =>
+      stepsResult
+        ? buildStepTree(stepsResult.steps, withOpenedBlocks(nodes as Node[]))
+        : [],
     [stepsResult, nodes],
   );
+  // Grover's algorithm: recognized from the gates of a Grover node, or, once the node
+  // was expanded into its building blocks, read from these blocks on the canvas
+  const groverInfo = useMemo(() => {
+    if (!stepsResult) return null;
+    if (stepsResult.groverIterations > 0) {
+      return {
+        numQubits: stepsResult.groverQubits.length,
+        iterations: stepsResult.groverIterations,
+        markedStates: stepsResult.groverMarkedStates,
+      };
+    }
+    return groverFromCanvas(stepsResult.steps, withOpenedBlocks(nodes as Node[]));
+  }, [stepsResult, nodes]);
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
   const toggleGroup = (key: string) =>
     setOpenGroups((prev) => {
@@ -916,18 +909,14 @@ export function QasmDiracPanel(props: Props) {
     });
     return selected;
   }, [stepGates, selectedGates]);
-  // `withPath`: the lines of all earlier steps are highlighted as well (more lightly), like
-  // the canvas highlights every node on the path to the clicked step
-  const selectStepLines = (from: number, to: number, withPath = false) => {
+  // highlights the lines of the steps from..to (only these, not the earlier steps)
+  const selectStepLines = (from: number, to: number) => {
     if (!onSelectQasmLines || !stepsResult) return;
-    const linesOf = (a: number, b: number) =>
-      stepsResult.steps
-        .slice(a, b)
-        .map((s) => s.line)
-        .filter((l): l is number => l !== undefined);
-    const lines = linesOf(from, to + 1);
-    if (lines.length > 0)
-      onSelectQasmLines(sourceQasm, lines, withPath ? linesOf(0, from) : []);
+    const lines = stepsResult.steps
+      .slice(from, to + 1)
+      .map((s) => s.line)
+      .filter((l): l is number => l !== undefined);
+    if (lines.length > 0) onSelectQasmLines(sourceQasm, lines, []);
   };
 
   // a line selected in the OpenQASM editor opens the steps (and the groups around the
@@ -988,17 +977,14 @@ export function QasmDiracPanel(props: Props) {
     );
     if (distinctOutcomes.size !== 1) return null;
 
+    // measurementResultIndices is sorted ascending, so the bits are written with the
+    // lowest qubit first and that qubit is the least significant bit, like everywhere
+    // else in Math Mode (see QubitOrder.tsx): 6 on q0..q2 is |011⟩ = 6.
     const bits = [...distinctOutcomes][0];
-    // measurementResultIndices is sorted ascending, i.e. bits[0] = LSB (least significant
-    // qubit first, as usual in the adder circuit). For display and the decimal conversion it
-    // is reversed into the intuitive MSB-first order, so that bitstring and decimal value are
-    // consistent: |011⟩ = 3₁₀ instead of the misleading |110⟩ = 3₁₀.
-    const bitsDisplay = bits.split("").reverse().join("");
-    const decimal = parseInt(bitsDisplay, 2);
     return {
       indices: measurementResultIndices,
-      bits: bitsDisplay,
-      decimal,
+      bits,
+      decimal: basisValue(bits),
     };
   }, [measurementResultIndices, fullResult]);
 
@@ -1206,6 +1192,9 @@ export function QasmDiracPanel(props: Props) {
       <span className="text-gray-500 text-xs">=</span>
       <span className="text-gray-800 whitespace-nowrap">
         {stepsResult?.steps[idx]?.unicode}
+        <span className="text-gray-400">
+          {basisValueSuffix(stepsResult?.steps[idx]?.unicode)}
+        </span>
       </span>
     </div>
   );
@@ -1235,25 +1224,16 @@ export function QasmDiracPanel(props: Props) {
             onClick={
               canvasLink || qasmLink
                 ? () => {
-                    selectStepLines(idx, idx, true);
+                    // only this step lights up: its line in the OpenQASM editor
+                    // and its gate on the canvas, not the earlier steps
+                    selectStepLines(idx, idx);
                     if (!canvasLink) return;
-                    // Collect all node IDs from step 0 up to and including the
-                    // clicked step (deduplicated, without undefined), so that every
-                    // node used up to that point is highlighted together.
-                    const nodeIdsUpToHere = Array.from(
-                      new Set(
-                        stepsResult.steps
-                          .slice(0, idx + 1)
-                          .map((s) => s.nodeId)
-                          .filter((n): n is string => !!n),
-                      ),
-                    );
                     const indexInNode = stepsResult.steps
                       .slice(0, idx)
                       .filter((s) => s.nodeId === step.nodeId).length;
-                    onStepClick!(nodeIdsUpToHere, {
+                    onStepClick!([step.nodeId!], {
                       nodeId: step.nodeId!,
-                      from: 0,
+                      from: indexInNode,
                       to: indexInNode,
                     });
                   }
@@ -1261,7 +1241,7 @@ export function QasmDiracPanel(props: Props) {
             }
             title={
               canvasLink
-                ? `Click to highlight all nodes used up to this point on the canvas; the block of this step opens down to its gates${qasmLink ? ". The line is highlighted in the OpenQASM editor" : ""}`
+                ? `Click to highlight this step on the canvas; the block of this step opens down to its gates${qasmLink ? ". The line is highlighted in the OpenQASM editor" : ""}`
                 : qasmLink
                   ? "Click to highlight the line in the OpenQASM editor"
                   : undefined
@@ -1492,7 +1472,15 @@ export function QasmDiracPanel(props: Props) {
           {!isPartial && measurementResultHint
             ? `|${measurementResultHint.bits}⟩`
             : unicodeStr}
+          {!(!isPartial && measurementResultHint) && (
+            <span className="text-gray-400">
+              {basisValueSuffix(unicodeStr ?? undefined)}
+            </span>
+          )}
         </span>
+      </div>
+      <div className="flex-shrink-0 px-1">
+        <QubitOrderNote numQubits={numQubits} />
       </div>
 
       {/* Note: in the final display a purely global phase (e.g. a sign on single-term
@@ -1539,21 +1527,17 @@ export function QasmDiracPanel(props: Props) {
               )}
             </span>
           </div>
-          {/* Note on bit significance: the display always follows q0,q1,q2,... from
-              left to right. Whether q[lowest index] is the least or the most significant
-              bit depends on the individual circuit (a ripple-carry adder, for example,
-              typically uses index 0 as the LSB). The decimal value shown above assumes
-              exactly the bit order in which the qubits are listed here
-              (q{measurementResultHint.indices[0]} first) - this does not necessarily
-              match the MSB-first convention. */}
+          {/* same qubit order as the rest of Math Mode (QubitOrderNote) */}
           {measurementResultHint.indices.length > 1 && (
             <div className="text-xs text-emerald-700/80 mt-1.5 pt-1.5 border-t border-emerald-200/70">
-              ⓘ Bit order shown: q{measurementResultHint.indices[0]} first (as
-              listed above). Depending on how this circuit encodes values (e.g.
-              an adder typically treats the lowest qubit index as the
-              least-significant bit), the decimal value may need to be read with
-              the bits in reverse order. Check your circuit's specific wiring if
-              the decimal value looks unexpected.
+              ⓘ Bit order: q{measurementResultHint.indices[0]} first, as
+              everywhere in Math Mode. q{measurementResultHint.indices[0]} is
+              the least significant bit, so the decimal value is{" "}
+              {measurementResultHint.bits
+                .split("")
+                .map((b, k) => `${b}·2${["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷"][k] ?? `^${k}`}`)
+                .join(" + ")}{" "}
+              = {measurementResultHint.decimal}.
             </div>
           )}
         </div>
@@ -1752,12 +1736,12 @@ export function QasmDiracPanel(props: Props) {
             </p>
           </div>
 
-          {/* Grover metadata, only rendered when a Grover node was detected */}
-          {stepsResult.groverIterations > 0 && (
+          {/* Grover metadata, only rendered when Grover's algorithm is in the model */}
+          {groverInfo && groverInfo.iterations > 0 && (
             <GroverInfoBox
-              numQubits={stepsResult.groverQubits.length}
-              iterations={stepsResult.groverIterations}
-              markedStates={stepsResult.groverMarkedStates}
+              numQubits={groverInfo.numQubits}
+              iterations={groverInfo.iterations}
+              markedStates={groverInfo.markedStates}
             />
           )}
 

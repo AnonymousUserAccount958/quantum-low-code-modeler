@@ -3,6 +3,8 @@ import React, { memo, useEffect, useState } from "react";
 import { Edge, Handle, Node, Position } from "reactflow";
 import { shallow } from "zustand/shallow";
 import OutputPort from "../utils/outputPort";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
+import { circuitBlockedReason } from "@/lib/circuitReadiness";
 import * as consts from "@/constants";
 import { findDuplicateOutputIdentifiers } from "../utils/utils";
 import { AlertCircle } from "lucide-react";
@@ -223,6 +225,13 @@ export const OperationNode = memo((node: Node) => {
             >
               {data.label.split(consts.quantumLabel)[1]}
             </span>
+            <CircuitLevelButton
+              nodeId={node.id}
+              label="operator"
+              disabledReason={
+                circuitBlockedReason(node, nodes, edges) ?? undefined
+              }
+            />
           </div>
         </div>
 

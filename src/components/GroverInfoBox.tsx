@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { basisValueSuffix } from "./QubitOrder";
 
 interface GroverInfoBoxProps {
   /** Qubits of the Grover register; the search space is 2^numQubits. */
@@ -65,7 +66,10 @@ export function GroverInfoBox({
             </div>
             {markedStates.length > 0 && (
               <div className="mt-1 text-gray-600">
-                Marked: {markedStates.map((s) => `|${s}⟩`).join(", ")}
+                Marked:{" "}
+                {markedStates
+                  .map((s) => `|${s}⟩${basisValueSuffix(`|${s}⟩`)}`)
+                  .join(", ")}
               </div>
             )}
             {exactOptimum !== null && (

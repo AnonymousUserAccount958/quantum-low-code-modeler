@@ -20,6 +20,7 @@ import {
 } from "../utils/utils";
 import { AlertCircle } from "lucide-react";
 import { awareness } from "@/yjs";
+import { displayInputType } from "@/lib/dataTypeRules";
 
 const selector = (state: {
   nodes: Node[];
@@ -407,8 +408,10 @@ export const AlgorithmNode = memo((node: Node) => {
                     </span>
                     <span className="text-[10px] text-gray-600">
                       type:{" "}
-                      {getInputType(
-                        `classicalHandleOperationInput${index}${node.id}`,
+                      {displayInputType(
+                        getInputType(
+                          `classicalHandleOperationInput${index}${node.id}`,
+                        ),
                       )}
                     </span>
                   </div>

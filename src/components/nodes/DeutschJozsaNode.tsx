@@ -4,6 +4,7 @@ import { useStore } from "@/config/store";
 import { shallow } from "zustand/shallow";
 import { cn } from "@/lib/utils";
 import OutputPort from "../utils/outputPort";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
 import { awareness } from "@/yjs";
 import { AlertCircle } from "lucide-react";
 
@@ -189,6 +190,7 @@ export const DeutschJozsaNode = memo((node: Node) => {
                   </span>
                 )}
               </div>
+              <CircuitLevelButton nodeId={id} label="Deutsch-Jozsa algorithm" />
             </div>
           </div>
 

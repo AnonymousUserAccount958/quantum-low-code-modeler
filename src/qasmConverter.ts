@@ -1,3 +1,14 @@
+/**
+ * Converts an OpenQASM file into a model (File → Open OpenQASM, and the circuits of
+ * generated models). The gates and groups come from the same parser as "Apply to
+ * Canvas" in the OpenQASM editor (qasmToNodes): all gates it knows, groups given by
+ * "/* Start group <label> *\/" … "/* End group <label> *\/" and recognized states (e.g. a
+ * Bell state). Measurements are added here as a Merger and a Measurement block.
+ */
+
+import type { Edge, Node } from "reactflow";
+import { qasmToNodes } from "./lib/qasmToNodes";
+
 type FlowJson = {
   metadata: any;
   nodes: any[];
@@ -5,68 +16,30 @@ type FlowJson = {
   viewport: { x: number; y: number; zoom: number };
 };
 
-const GATE_LABELS: Record<string, string> = {
-  x: "X",
-  y: "Y",
-  z: "Z",
-  h: "H",
-  cx: "CNOT",
-  cnot: "CNOT",
-  ccx: "Toffoli",
-  swap: "SWAP",
-  measure: "Measurement",
-};
-
 const generateId = () => crypto.randomUUID();
 
-function createQubitNode(id: string, x: number, y: number, q: string) {
-  return {
-    id,
-    type: "gateNode",
-    position: { x, y },
-    data: {
-      label: "Qubit Circuit",
-      inputs: [],
-      children: [],
-      identifiers: [q],
-      inputTypes: [],
-      outputTypes: ["quantum register"],
-      completionGuaranteed: true,
-      compactOptions: [true, false],
-      parameter: "0",
-    },
-    width: 110,
-    height: 110,
-    positionAbsolute: { x, y },
-  };
-}
+/** Width of a node on the canvas (a group has its size in style). */
+const NODE_WIDTH = 110;
 
-function createGateNode(
-  id: string,
-  label: string,
-  x: number,
-  y: number,
-  identifiers: string[],
-  inputs: any[],
-) {
+function makeEdge(
+  source: string,
+  target: string,
+  sHandle: string,
+  tHandle: string,
+): Edge {
   return {
-    id,
-    type: "gateNode",
-    position: { x, y },
-    data: {
-      label,
-      inputs,
-      children: [],
-      identifiers,
-      inputTypes: Array(inputs.length).fill("quantum register"),
-      outputTypes: Array(Math.max(1, inputs.length)).fill("quantum register"),
-      completionGuaranteed: true,
-      compactOptions: [true, false],
-      parameter: "0",
-    },
-    width: 110,
-    height: 110,
-    positionAbsolute: { x, y },
+    id: generateId(),
+    source,
+    target,
+    sourceHandle: sHandle,
+    targetHandle: tHandle,
+    type: "quantumEdge",
+    markerEnd: {
+      type: "arrowclosed",
+      width: 20,
+      height: 20,
+      color: "#93C5FD",
+    } as Edge["markerEnd"],
   };
 }
 
@@ -94,242 +67,126 @@ function createMergerNode(
     },
     width: 170,
     height: 165,
-    positionAbsolute: { x, y },
-  };
-}
-
-function makeEdge(
-  source: string,
-  target: string,
-  sHandle: string,
-  tHandle: string,
-) {
-  return {
-    id: generateId(),
-    source,
-    target,
-    sourceHandle: sHandle,
-    targetHandle: tHandle,
-    type: "quantumEdge",
-    markerEnd: {
-      type: "arrowclosed",
-      width: 20,
-      height: 20,
-      color: "#93C5FD",
-      hidden: false,
-    },
   };
 }
 
 export function openQasmToFlow(qasm: string): FlowJson {
   qasm = qasm.replace(/\r\n/g, "\n").replace(/\uFEFF/g, "");
 
-  const nodes: any[] = [];
-  const edges: any[] = [];
-
-  // Register: QASM 3 "qubit[N] name;" or QASM 2 "qreg name[N];"
-  const qasm3Match = /qubit\[(\d+)\]\s+([a-zA-Z0-9_]+)\s*;/.exec(qasm);
-  const qasm2Match = /qreg\s+([a-zA-Z0-9_]+)\s*\[(\d+)\]\s*;/.exec(qasm);
-  if (!qasm3Match && !qasm2Match)
+  // Registers: QASM 3 "qubit[N] name;" or QASM 2 "qreg name[N];", numbered one after
+  // the other (as in qasmToNodes)
+  const registerStart = new Map<string, number>();
+  const registerSize = new Map<string, number>();
+  let n = 0;
+  const registerRe =
+    /qubit(?:\[(\d+)\])?\s+([a-zA-Z0-9_]+)\s*;|qreg\s+([a-zA-Z0-9_]+)\s*\[(\d+)\]\s*;/g;
+  let m: RegExpExecArray | null;
+  while ((m = registerRe.exec(qasm))) {
+    const name = m[2] ?? m[3];
+    const size = Number(m[1] ?? m[4] ?? 1);
+    registerStart.set(name, n);
+    registerSize.set(name, size);
+    n += size;
+  }
+  if (n === 0)
     throw new Error(
       'No qubit register found. Expected "qubit[N] name;" (OpenQASM 3) or "qreg name[N];" (OpenQASM 2).',
     );
 
-  const n = Number(qasm3Match ? qasm3Match[1] : qasm2Match![2]);
-  const reg = qasm3Match ? qasm3Match[2] : qasm2Match![1];
-  const qLabel = (i: number) => `${reg}[${i}]`;
+  // gates and groups
+  const parsed = qasmToNodes(qasm);
+  const nodes: any[] = parsed.nodes;
+  const edges: any[] = parsed.edges;
+  const qLabel = (q: number) => `q${q}`;
 
-  // Per-qubit wire state:
-  //   lastNodeId[q]   = id of the node that currently "owns" qubit q's wire
-  //   lastOutIdx[q]   = which output-slot index that qubit exits from that node
-  //   depth[q]        = column depth (for x-positioning)
-  const lastNodeId: (string | null)[] = Array(n).fill(null);
-  const lastOutIdx: number[] = Array(n).fill(0);
-  const depth: number[] = Array(n).fill(0);
-
-  // Qubit source nodes
-  for (let i = 0; i < n; i++) {
-    const id = generateId();
-    nodes.push(createQubitNode(id, -90, i * 180 - 90, qLabel(i)));
-    lastNodeId[i] = id;
-    lastOutIdx[i] = 0; // qubit nodes only have output slot 0
-  }
-
-  // 2. ALIAS MAP
+  // Aliases of LEQO code:
   //    let alias = reg[{0}]
   //    let alias = reg[{2,3}]
-  //    let alias = otherAlias, copy
+  //    let alias = otherAlias;
   const aliasMap: Record<string, number[]> = {};
-
   const directAliasRe =
-    /let\s+([a-zA-Z0-9_.]+)\s*=\s*([a-zA-Z0-9_]+)\s*\[\{([^}]+)\}\]\s*;/g;
-  let m: RegExpExecArray | null;
+    /let\s+([a-zA-Z0-9_.]+)\s*=\s*([a-zA-Z0-9_.]+)\s*\[\{([^}]+)\}\]\s*;/g;
   while ((m = directAliasRe.exec(qasm))) {
-    const aliasName = m[1];
-    const srcName = m[2];
-    const idxs = m[3].split(",").map((s) => Number(s.trim()));
-    if (srcName === reg) {
-      aliasMap[aliasName] = idxs;
-    } else if (aliasMap[srcName]) {
-      aliasMap[aliasName] = idxs.map((i) => aliasMap[srcName][i]);
-    }
+    const [, alias, source, list] = m;
+    const idxs = list.split(",").map((s) => Number(s.trim()));
+    const start = registerStart.get(source);
+    if (start !== undefined) aliasMap[alias] = idxs.map((i) => start + i);
+    else if (aliasMap[source])
+      aliasMap[alias] = idxs.map((i) => aliasMap[source][i]);
   }
-
-  // alias-of-alias without indexing:  let out = encoded;
   const indirectAliasRe = /let\s+([a-zA-Z0-9_.]+)\s*=\s*([a-zA-Z0-9_.]+)\s*;/g;
   while ((m = indirectAliasRe.exec(qasm))) {
     const [, dst, src] = m;
     if (!aliasMap[dst] && aliasMap[src]) aliasMap[dst] = [...aliasMap[src]];
   }
 
-  // 3. RESOLVE alias name + local index, absolute qubit index
+  /** Global index of qubit `localIdx` of a register or alias. */
   function resolveQubit(name: string, localIdx: number): number | undefined {
     if (aliasMap[name] !== undefined) return aliasMap[name][localIdx];
-    if (name === reg) return localIdx;
-    return undefined;
+    const start = registerStart.get(name);
+    return start !== undefined ? start + localIdx : undefined;
   }
 
-  // 4. SOURCE HANDLE for a qubit wire leaving a node
-  //
-  //    sourceHandle format:
-  //      gate/qubit node:  quantumHandleGateOutput{outIdx}{nodeId}
-  //      merger node:      quantumHandleMergerOutput{outIdx}{nodeId}
-  //
-  //    outIdx = the position slot in the node that this qubit uses
-  function sourceHandle(nodeId: string, outIdx: number): string {
-    const node = nodes.find((nd) => nd.id === nodeId);
-    if (node?.type === "mergerNode") {
-      return `quantumHandleMergerOutput${outIdx}${nodeId}`;
-    }
-    return `quantumHandleGateOutput${outIdx}${nodeId}`;
-  }
-
-  // 5. APPLY A GATE
-  //    operands: ordered list of [aliasName, localIdx]
-  function applyGate(gate: string, operands: Array<[string, number]>) {
-    // Resolve each operand to an absolute qubit index
-    const qIdxs: number[] = [];
-    for (const [name, li] of operands) {
-      const q = resolveQubit(name, li);
-      if (q === undefined) {
-        console.warn(`Cannot resolve qubit: ${name}[${li}]`);
-        return;
-      }
-      qIdxs.push(q);
-    }
-
-    const gateId = generateId();
-    const d = Math.max(...qIdxs.map((q) => depth[q])) + 1;
-    const x = d * 300 - 180;
-    const y = ((Math.min(...qIdxs) + Math.max(...qIdxs)) / 2) * 180 - 90;
-
-    const inputs: any[] = [];
-
-    qIdxs.forEach((q, inputPos) => {
-      const prevNode = lastNodeId[q];
-      const prevOutIdx = lastOutIdx[q];
-      if (prevNode === null) return;
-
-      // target handle: which input slot of the NEW gate this qubit enters
-      const tHandle = `quantumHandleGateInput${inputPos}${gateId}`;
-      // source handle: which output slot of the PREVIOUS node this qubit exits
-      const sHandle = sourceHandle(prevNode, prevOutIdx);
-
-      const e = makeEdge(prevNode, gateId, sHandle, tHandle);
-      edges.push(e);
-
-      inputs.push({
-        id: prevNode,
-        edgeId: e.id,
-        identifiers: [qLabel(q)],
-        targetHandle: tHandle,
-      });
-
-      // After this gate, qubit q exits at output slot = inputPos (same position)
-      lastNodeId[q] = gateId;
-      lastOutIdx[q] = inputPos;
-      depth[q] = d;
-    });
-
-    nodes.push(
-      createGateNode(
-        gateId,
-        GATE_LABELS[gate] || gate.toUpperCase(),
-        x,
-        y,
-        qIdxs.map((q) => qLabel(q)),
-        inputs,
-      ),
-    );
-  }
-
-  // 6. PARSE GATE LINES (handle multi-line operands)
+  // MEASUREMENTS
+  //    QASM 3: bit[N] name = measure alias[{0,1}];   bit[N] c = measure q;
+  //            c = measure q;   c[0] = measure q[0];
+  //    QASM 2: measure q[i] -> c[j];   or   measure q -> c;
+  // All measured qubits go into one Merger (skipped for a single qubit) and one
+  // Measurement block, whose indices are the measured qubits (empty for all).
   const noComments = qasm
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/\/\/[^\n]*/g, " ");
-
-  const gateLineRe =
-    /\b(x|y|z|h|cx|ccx|cnot|swap)\s+((?:[a-zA-Z0-9_.]+\s*\[\d+\]\s*,?\s*\n?\s*)+);/gi;
-
-  while ((m = gateLineRe.exec(noComments))) {
-    const gate = m[1].toLowerCase();
-    const operandStr = m[2];
-    const opRe = /([a-zA-Z0-9_.]+)\s*\[(\d+)\]/g;
-    const operands: Array<[string, number]> = [];
-    let om: RegExpExecArray | null;
-    while ((om = opRe.exec(operandStr))) {
-      operands.push([om[1], Number(om[2])]);
-    }
-    if (operands.length > 0) applyGate(gate, operands);
-  }
-
-  // 7. PARSE MEASUREMENTS
-  //
-  //  Patterns:
-  //    QASM 3: bit[N] name = measure alias[{0,1}];
-  //    QASM 2: measure q[i] -> c[j];   or   measure q -> c;
-  //
-  //  All measured qubits are collected, then we:
-  //    a) Create one MERGER combining the wires of all qubits
-  //       (skipped for a single qubit, which goes straight into the measurement)
-  //    b) Create one MEASUREMENT node with a single input from the merger,
-  //       its indices are the measured qubits (empty if the whole register is measured)
   const measured: number[] = [];
   let outputName: string | null = null;
   const addMeasured = (q: number | undefined) => {
     if (q !== undefined && q < n && !measured.includes(q)) measured.push(q);
   };
 
+  // [optional "bit[N]"] target[optional index] = measure source[optional {i,j} or i]
   const measRe =
-    /bit\[(\d+)\]\s+([a-zA-Z0-9_]+)\s*=\s*measure\s+([a-zA-Z0-9_.]+)\s*\[\{([^}]+)\}\]\s*;/g;
-
+    /(?:\bbit(?:\[\d+\])?\s+)?\b([a-zA-Z_][a-zA-Z0-9_]*)(?:\s*\[\d+\])?\s*=\s*measure\s+([a-zA-Z0-9_.]+)\s*(?:\[\s*\{?([\d\s,]+)\}?\s*\])?\s*;/g;
   while ((m = measRe.exec(noComments))) {
-    const aliasName = m[3];
-    outputName ??= m[2];
-    m[4]
-      .split(",")
-      .map((s) => Number(s.trim()))
-      .forEach((li) => addMeasured(resolveQubit(aliasName, li)));
+    const [, target, source, list] = m;
+    outputName ??= target;
+    const all =
+      aliasMap[source] ??
+      [...Array(registerSize.get(source) ?? 0).keys()].map(
+        (i) => (registerStart.get(source) ?? 0) + i,
+      );
+    const picked = list
+      ? list.split(",").map((s) => all[Number(s.trim())])
+      : all;
+    picked.forEach(addMeasured);
   }
 
   const qasm2MeasRe =
     /measure\s+([a-zA-Z0-9_]+)\s*(?:\[(\d+)\])?\s*->\s*([a-zA-Z0-9_]+)\s*(?:\[\d+\])?\s*;/g;
-
   while ((m = qasm2MeasRe.exec(noComments))) {
-    if (m[1] !== reg) continue;
+    const start = registerStart.get(m[1]);
+    if (start === undefined) continue;
     outputName ??= m[3];
-    if (m[2] !== undefined) addMeasured(Number(m[2]));
+    if (m[2] !== undefined) addMeasured(start + Number(m[2]));
     else for (let q = 0; q < n; q++) addMeasured(q);
   }
 
   if (measured.length > 0) {
     const allQubits = [...Array(n).keys()];
-    const identifiers = allQubits.map((q) => qLabel(q));
-    const maxDepth = Math.max(...depth);
-    const midY = ((n - 1) / 2) * 180 - 90;
+    const identifiers = allQubits.map(qLabel);
+    // right of the circuit: top-level nodes and groups (children are relative to them)
+    const right = Math.max(
+      ...nodes
+        .filter((nd: Node) => !nd.parentNode)
+        .map(
+          (nd: Node) => nd.position.x + (Number(nd.style?.width) || NODE_WIDTH),
+        ),
+    );
+    const ys = nodes
+      .filter((nd: Node) => parsed.qubitNodeIds.includes(nd.id))
+      .map((nd: Node) => nd.position.y);
+    const midY = (Math.min(...ys) + Math.max(...ys)) / 2;
 
     const measId = generateId();
-    const measX = (maxDepth + 2) * 300 - 180 + (n > 1 ? 350 : 0);
+    const measX = right + (n > 1 ? 400 : 150);
     const measTHandle = `quantumHandleMeasurementInput0${measId}`;
 
     let measInputNode: string;
@@ -337,38 +194,23 @@ export function openQasmToFlow(qasm: string): FlowJson {
 
     if (n > 1) {
       const mergerId = generateId();
-      const mergerInputs: any[] = [];
-
-      allQubits.forEach((q, mergerInputPos) => {
-        const prevNode = lastNodeId[q];
-        if (prevNode === null) return;
-
-        const tHandle = `quantumHandleMergerInput${mergerInputPos}${mergerId}`;
-        const e = makeEdge(
-          prevNode,
-          mergerId,
-          sourceHandle(prevNode, lastOutIdx[q]),
-          tHandle,
-        );
+      const mergerInputs = allQubits.map((q) => {
+        const last = parsed.lastHandles[q];
+        const tHandle = `quantumHandleMergerInput${q}${mergerId}`;
+        const e = makeEdge(last.nodeId, mergerId, last.handle, tHandle);
         edges.push(e);
-
-        mergerInputs.push({
-          id: prevNode,
+        return {
+          id: last.nodeId,
           edgeId: e.id,
           identifiers: [qLabel(q)],
           targetHandle: tHandle,
-        });
-
-        // Merger absorbs the wire
-        lastNodeId[q] = mergerId;
-        lastOutIdx[q] = mergerInputPos;
+        };
       });
-
       nodes.push(
         createMergerNode(
           mergerId,
           measX - 350,
-          midY + 180, // place below midpoint like reference
+          midY + 160,
           identifiers,
           mergerInputs,
         ),
@@ -376,8 +218,8 @@ export function openQasmToFlow(qasm: string): FlowJson {
       measInputNode = mergerId;
       measSHandle = `quantumHandleMergerOutput0${mergerId}`;
     } else {
-      measInputNode = lastNodeId[0]!;
-      measSHandle = sourceHandle(measInputNode, lastOutIdx[0]);
+      measInputNode = parsed.lastHandles[0].nodeId;
+      measSHandle = parsed.lastHandles[0].handle;
     }
 
     const measEdge = makeEdge(measInputNode, measId, measSHandle, measTHandle);
@@ -410,7 +252,6 @@ export function openQasmToFlow(qasm: string): FlowJson {
       },
       width: 320,
       height: 440,
-      positionAbsolute: { x: measX, y: midY },
     });
   }
 

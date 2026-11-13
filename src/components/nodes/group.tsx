@@ -17,7 +17,13 @@ import {
   collapseGroverSubprocess,
   subprocessHasOnlyGroverBlocks,
 } from "@/lib/expandGrover";
-import { circuitLevelChanged, restoreCompactModel } from "@/lib/circuitLevel";
+import {
+  circuitLevelChanged,
+  circuitOfGroup,
+  phaseOracleMarkedStates,
+  restoreCompactModel,
+} from "@/lib/circuitLevel";
+import { UniversalOracleNode } from "@/constants";
 import {
   collapseStatePreparationGroup,
   compactFormName,
@@ -92,6 +98,23 @@ function getHandleColor(handleId: string): string {
   if (handleId.toLowerCase().includes("ancilla")) return "#c084fc";
   return "#94a3b8";
 }
+
+/**
+ * Handles on an expanded group (one per unconnected port of a child node, or a generic
+ * input/output). Switched off for now: connections are made to the child nodes directly.
+ */
+const SHOW_PROXY_HANDLES = false;
+
+/** State preparations with a classical value input (see statepreparation.tsx). */
+const CLASSICAL_INPUT_ENCODINGS = new Set([
+  "Encode Value",
+  "Basis Encoding",
+  "Custom Encoding",
+  "Angle Encoding",
+  "Amplitude Encoding",
+  "Matrix Encoding",
+  "Schmidt Decomposition",
+]);
 
 interface ProxyHandle {
   id: string;
@@ -232,7 +255,11 @@ function getProxyHandles(
       inputPrefix = "quantumHandleGateInput";
     else if (nodeType === "measurementNode")
       inputPrefix = "quantumHandleMeasurementInput";
-    else if (nodeType === "statePreparationNode")
+    // only the encodings have a classical input, not e.g. "Prepare State"
+    else if (
+      nodeType === "statePreparationNode" &&
+      CLASSICAL_INPUT_ENCODINGS.has(child.data?.label)
+    )
       inputPrefix = "classicalHandleStatePreparationInput";
     else if (nodeType === "quantumOperatorNode")
       inputPrefix = "quantumHandleQuantumOperatorInput";
@@ -299,12 +326,13 @@ export const GroupNode = memo((node: Node) => {
   const borderRadius = groupStyle.borderRadius;
   const borderStyle = collapsed ? "solid" : groupStyle.borderStyle;
 
-  // proxy handles only while the group is expanded
+  // proxy handles only while the group is expanded (currently switched off)
+  const showProxyHandles = SHOW_PROXY_HANDLES && !collapsed;
   const {
     inputs: proxyInputs,
     outputs: proxyOutputs,
     hasInputs: groupHasInputs,
-  } = !collapsed
+  } = showProxyHandles
     ? getProxyHandles(childNodes, getEdges())
     : {
         inputs: [] as ProxyHandle[],
@@ -444,15 +472,57 @@ export const GroupNode = memo((node: Node) => {
     const currentEdges = getEdges();
     const self = currentNodes.find((n) => n.id === id);
     if (!self) return;
-    if (
-      circuitLevelChanged(self, currentNodes) &&
-      !window.confirm(
-        "The gates in this group were changed. Collapsing restores the original block and discards these changes. Continue?",
-      )
-    ) {
-      return;
+    let dataChanges: Record<string, unknown> | undefined;
+    if (circuitLevelChanged(self, currentNodes)) {
+      // an edited phase oracle (e.g. X gates added around it) keeps its new behaviour:
+      // the oracle block gets the states the edited circuit marks
+      const oracle = (self.data.circuitLevel.removedNodes as Node[]).find(
+        (r) => r.type === UniversalOracleNode,
+      );
+      const circuit =
+        oracle && (oracle.data?.mode ?? "phase") === "phase"
+          ? circuitOfGroup(self, currentNodes, currentEdges)
+          : null;
+      const marked =
+        circuit && typeof circuit !== "string"
+          ? phaseOracleMarkedStates(circuit)
+          : null;
+      if (oracle && circuit && typeof circuit !== "string" && marked?.length) {
+        const ket = (x: number) =>
+          `|${x
+            .toString(2)
+            .padStart(circuit.numQubits, "0")
+            .split("")
+            .reverse()
+            .join("")}⟩ = ${x}`;
+        const after = marked.map(ket).join(", ");
+        if (
+          !window.confirm(
+            `The oracle circuit was changed: it now marks ${after} (before: ${oracle.data?.targetStates}). Collapse into the Grover Oracle with ${marked.length === 1 ? "this marked state" : "these marked states"}?`,
+          )
+        )
+          return;
+        dataChanges = { targetStates: marked.join(", ") };
+      } else if (
+        !window.confirm(
+          `The gates in this group were changed.${
+            oracle
+              ? typeof circuit === "string"
+                ? ` ${circuit}`
+                : " The circuit no longer only flips the sign of basis states, so it cannot be written as marked states of the oracle."
+              : ""
+          } Collapsing restores the original block and discards these changes. Continue?`,
+        )
+      ) {
+        return;
+      }
     }
-    const result = restoreCompactModel(self, currentNodes, currentEdges);
+    const result = restoreCompactModel(
+      self,
+      currentNodes,
+      currentEdges,
+      dataChanges,
+    );
     // keep the circuit-level version in the undo history
     useStore.setState((state: any) => ({
       ...appendHistory(state.history, state.historyIndex, {
@@ -959,7 +1029,7 @@ export const GroupNode = memo((node: Node) => {
           }}
         />
       )}
-      {(collapsed || proxyOutputs.length === 0) && (
+      {(collapsed || (showProxyHandles && proxyOutputs.length === 0)) && (
         <Handle
           type="source"
           id={`groupOutput0${id}`}

@@ -43,6 +43,16 @@ function locatedGates(qasm: string): LocatedGate[] {
   return gates;
 }
 
+/** The gates (with their 0-based lines) compiled from the given canvas nodes. */
+export function gatesOfNodes(
+  qasm: string,
+  nodeIds: Set<string>,
+): { line: number; gate: GateLocator }[] {
+  return locatedGates(qasm)
+    .filter((g) => g.nodeId && nodeIds.has(g.nodeId))
+    .map(({ line, ...gate }) => ({ line, gate }));
+}
+
 /** The gate on a (0-based) line of the QASM, or null if the line holds no gate. */
 export function gateAtLine(qasm: string, line: number): GateLocator | null {
   const gate = locatedGates(qasm).find((g) => g.line === line);

@@ -39,7 +39,8 @@ export interface GroverSegment {
   iteration?: number;
 }
 
-const MCX_NAMES = new Set(["ccx", "toffoli", "mcx"]);
+// on two qubits the multi-controlled X of the diffuser is a plain CNOT (H·CX·H = CZ)
+const MCX_NAMES = new Set(["cx", "cnot", "ccx", "toffoli", "mcx"]);
 const CZ_NAMES = new Set(["cz", "ccz", "mcz"]);
 
 function gateName(g: SegmentableGate): string {

@@ -15,6 +15,7 @@ import {
 } from "../utils/utils";
 import { AlertCircle } from "lucide-react";
 import { awareness } from "@/yjs";
+import { displayInputType } from "@/lib/dataTypeRules";
 
 const selector = (state: any) => ({
   nodes: state.nodes,
@@ -315,7 +316,7 @@ export const ClassicalAlgorithmNode = memo((node: Node) => {
                 </span>
 
                 <span className="text-[10px] text-gray-600">
-                  type: {getInputType(index)?.toLowerCase()}
+                  type: {displayInputType(getInputType(index)?.toLowerCase())}
                 </span>
               </div>
             </div>

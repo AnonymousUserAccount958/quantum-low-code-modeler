@@ -1,5 +1,5 @@
 import Modal from "./Modal";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 interface SendRequestModalProps {
   open: boolean;
@@ -25,12 +25,23 @@ export const SendRequestModal = ({
   const qasmUnavailable =
     containsPlaceholder || containsWorkflowNodes || containsPythonNodes;
 
+  // set when Workflow was chosen only because OpenQASM was not available, so OpenQASM is
+  // chosen again once it is (e.g. the placeholder was replaced by a number)
+  const forcedWorkflow = useRef(false);
   useEffect(() => {
     if (
       qasmUnavailable &&
       (compilationTarget === "qasm" || compilationTarget === "qiskit")
     ) {
+      forcedWorkflow.current = true;
       setCompilationTarget("workflow");
+    } else if (
+      !qasmUnavailable &&
+      forcedWorkflow.current &&
+      compilationTarget === "workflow"
+    ) {
+      forcedWorkflow.current = false;
+      setCompilationTarget("qasm");
     }
   }, [qasmUnavailable, compilationTarget, setCompilationTarget]);
 
@@ -56,7 +67,11 @@ export const SendRequestModal = ({
           <select
             className="select select-bordered w-full"
             value={compilationTarget}
-            onChange={(e) => setCompilationTarget(e.target.value)}
+            onChange={(e) => {
+              // the user's own choice is kept
+              forcedWorkflow.current = false;
+              setCompilationTarget(e.target.value);
+            }}
           >
             <option value="workflow">Workflow</option>
             <option value="qasm" disabled={qasmUnavailable}>
@@ -73,11 +88,11 @@ export const SendRequestModal = ({
         </div>
         {containsPythonNodes && (
           <p className="text-sm text-gray-600">
-            The model contains a block with a Python implementation. Python
-            code runs on a classical computer and cannot be expressed as an
-            OpenQASM circuit, so the model can only be transformed into a
-            workflow. The Python code is then executed as a service task by a
-            generated service.
+            The model contains a block with a Python implementation. Python code
+            runs on a classical computer and cannot be expressed as an OpenQASM
+            circuit, so the model can only be transformed into a workflow. The
+            Python code is then executed as a service task by a generated
+            service.
           </p>
         )}
       </div>

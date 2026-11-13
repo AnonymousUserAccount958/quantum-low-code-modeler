@@ -12,6 +12,7 @@ import { shallow } from "zustand/shallow";
 import OutputPort from "../utils/outputPort";
 import * as consts from "@/constants";
 import { awareness } from "@/yjs";
+import { displayInputType } from "@/lib/dataTypeRules";
 
 const selector = (state: {
   selectedNode: Node | null;
@@ -335,7 +336,7 @@ export const ClassicalOperationNode = memo((node: Node) => {
                     {node.data.inputs[0]?.outputIdentifier || "Input 1"}
                   </span>
                   <span className="text-[10px] text-gray-600">
-                    type: {getInputType(0)?.toLowerCase() ?? "unknown"}
+                    type: {displayInputType(getInputType(0)?.toLowerCase())}
                   </span>
                 </div>
               </div>
@@ -370,7 +371,7 @@ export const ClassicalOperationNode = memo((node: Node) => {
                         inputTypesMatch() ? "text-gray-600" : "text-red-500",
                       )}
                     >
-                      type: {getInputType(1)?.toLowerCase() ?? "unknown"}
+                      type: {displayInputType(getInputType(1)?.toLowerCase())}
                     </span>
                   </div>
                 </div>

@@ -4,6 +4,8 @@ import { useStore } from "@/config/store";
 import { shallow } from "zustand/shallow";
 import { cn } from "@/lib/utils";
 import { quantumConstructColor } from "@/constants";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
+import { mcmtSizeKnown } from "@/lib/circuitLevel";
 
 export type MCMTGateNodeData = {
   label: string;
@@ -118,6 +120,9 @@ export const MCMTGateNode = memo((node: Node<MCMTGateNodeData>) => {
             >
               {data.label || "MCMT Gate"}
             </span>
+            {mcmtSizeKnown(data) && (
+              <CircuitLevelButton nodeId={id} label="MCMT gate" />
+            )}
           </div>
         </div>
 

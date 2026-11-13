@@ -14,6 +14,7 @@ import { QasmCodeEditor } from "./QasmCodeEditor";
 import { validateQasm } from "./utils/qasmValidate";
 import {
   gateAtLine,
+  gatesOfNodes,
   lineOfGate,
   nodeSectionAtLine,
   qubitLineKind,
@@ -24,15 +25,26 @@ import {
   analyzeComponents,
   type DiracComponent,
 } from "@/lib/componentAnalyzer";
-import { addedNodeIds, qasmToNodes } from "@/lib/qasmToNodes";
+import {
+  addedNodeIds,
+  canvasBlockGroups,
+  qasmToNodes,
+} from "@/lib/qasmToNodes";
 import { removeGateNodes } from "@/lib/removeGateNodes";
 import { expandGroupsAround } from "@/lib/groupHandler";
 import {
   createOpenedBlocks,
   followStep,
+  withOpenedBlocks,
   type OpenedBlocks,
 } from "@/lib/circuitLevel";
 import JSZip from "jszip";
+import {
+  AlgorithmNode,
+  ClassicalAlgorithmNode,
+  PluginNode,
+  StatePreparationNode,
+} from "@/constants";
 import { buildStepTree } from "./mathExplanations";
 import { buildLatexExport } from "./latexExport";
 
@@ -108,10 +120,50 @@ export const CustomPanel = ({
     openedBlocks.current = createOpenedBlocks();
   }, [qasmCode]);
 
-  // clicking a node on the canvas shows its properties
+  // clicking a node on the canvas shows its properties, unless the OpenQASM editor or
+  // Math Mode is open: these stay open and show where the node is in the code and steps
   useEffect(() => {
-    if (selectedNode) setActiveTab("properties");
+    if (!selectedNode) return;
+    const codeView =
+      (activeTab === "math" && mathMode) ||
+      (activeTab === "qasm" && qasmEditorMode) ||
+      isSplit;
+    if (!codeView) setActiveTab("properties");
   }, [selectedNode]);
+
+  // a block clicked on the canvas: its lines in the OpenQASM editor and its steps in
+  // Math Mode light up, on every click. The editor shows the compiled model, Math Mode
+  // its own compiled circuits (also when the model was never compiled for the editor);
+  // both identify a gate by its node and position, so the steps are found in either.
+  const showNodeInCode = (nodeId: string) => {
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node || !(mathMode || qasmEditorMode)) return;
+    const inEditor = qasmEditorCode
+      ? gatesOfSelection(node, nodes, qasmEditorCode, openedBlocks.current)
+      : [];
+    const inMath = mathMode
+      ? components.flatMap((c) =>
+          c.qasm
+            ? gatesOfSelection(node, nodes, c.qasm, openedBlocks.current)
+            : [],
+        )
+      : [];
+    const gates = [...inEditor, ...inMath].map((g) => g.gate);
+    setQasmHighlight(inEditor.map((g) => g.line));
+    setQasmPathHighlight([]);
+    setSelectedGates(gates);
+    if (gates.length > 0) setRevealSelection((n) => n + 1);
+  };
+  const showNodeInCodeRef = useRef(showNodeInCode);
+  showNodeInCodeRef.current = showNodeInCode;
+  useEffect(() => {
+    const onNodeClick = (e: Event) => {
+      const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
+      if (nodeId) showNodeInCodeRef.current(nodeId);
+    };
+    window.addEventListener("lcm-node-click", onNodeClick);
+    return () => window.removeEventListener("lcm-node-click", onNodeClick);
+  }, []);
   // code typed in the OpenQASM editor that is not (yet) the compiled model; Math Mode's
   // circuit editor shows it so that both editors show the same circuit
   const editorQasmChanged =
@@ -252,7 +304,9 @@ export const CustomPanel = ({
         return;
       }
 
-      const parsed = qasmToNodes(newQasm);
+      const parsed = qasmToNodes(newQasm, {
+        blockGroups: canvasBlockGroups(nodes),
+      });
       const { nodes: newNodes, edges: newEdges } = parsed;
       if (newNodes.length === 0) return;
       // qubits and operations added in the circuit editor light up on the canvas
@@ -566,7 +620,10 @@ export const CustomPanel = ({
                     setQasmApplySuccess(false);
                     if (qasmProblems.length > 0) return;
                     try {
-                      const parsed = qasmToNodes(qasmEditorCode);
+                      // blocks of the model (e.g. QAOA) come back as groups
+                      const parsed = qasmToNodes(qasmEditorCode, {
+                        blockGroups: canvasBlockGroups(nodes),
+                      });
                       const { nodes: newNodes, edges: newEdges } = parsed;
                       if (newNodes.length === 0) {
                         setQasmApplyError(
@@ -680,6 +737,12 @@ export const CustomPanel = ({
             </div>
 
             <div className="flex-1 overflow-y-auto p-2">
+              {!canvasEmpty && !standaloneEditor && (
+                <NoCircuitNotice
+                  nodes={nodes}
+                  onShow={(id) => highlightCanvasNodes(setNodes, [id])}
+                />
+              )}
               {canvasEmpty || standaloneEditor ? (
                 <div className="flex flex-col gap-2">
                   {canvasEmpty && (
@@ -773,6 +836,127 @@ interface QasmLinkProps {
   revealSelection?: number;
 }
 
+/**
+ * The gates in the OpenQASM code that belong to a node clicked on the canvas: its own,
+ * those of everything inside it (a group), and those of the blocks it was opened from
+ * (a Grover subprocess, a circuit level). A gate inside an opened block is found in the
+ * section of that block while the code still shows the block (until it is recompiled).
+ */
+function gatesOfSelection(
+  node: Node,
+  nodes: Node[],
+  qasm: string,
+  opened: OpenedBlocks,
+): { line: number; gate: GateLocator }[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const ids = new Set<string>([node.id]);
+  const queue = [node.id];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const n of nodes) {
+      if (n.parentNode === current && !ids.has(n.id)) {
+        ids.add(n.id);
+        queue.push(n.id);
+      }
+    }
+  }
+  for (const id of [...ids]) {
+    const data = byId.get(id)?.data;
+    if (data?.subprocess?.id) ids.add(data.subprocess.id);
+    for (const removed of (data?.circuitLevel?.removedNodes ?? []) as Node[]) {
+      ids.add(removed.id);
+    }
+  }
+
+  const located = gatesOfNodes(qasm, ids);
+  const add = (gate: GateLocator) => {
+    const line = lineOfGate(qasm, gate);
+    if (line !== null) located.push({ line, gate });
+  };
+  // a gate of a circuit level, while the code still has the block it was opened from
+  const parent = node.parentNode ? byId.get(node.parentNode) : undefined;
+  const snapshot = parent?.data?.circuitLevel;
+  const k = (snapshot?.gateNodeIds ?? []).indexOf(node.id);
+  const compact = (snapshot?.removedNodes ?? []).find(
+    (r: Node) => r.type !== "dataTypeNode",
+  );
+  if (k >= 0 && compact) add({ nodeId: compact.id, indexInNode: k, index: -1 });
+  // steps that Math Mode already follows to this node (e.g. a Grover building block)
+  for (const [blockId, stepIds] of opened.steps) {
+    if (ids.has(blockId)) continue;
+    stepIds.forEach((id, index) => {
+      if (ids.has(id)) add({ nodeId: blockId, indexInNode: index, index: -1 });
+    });
+  }
+
+  const seen = new Set<number>();
+  return located
+    .filter((g) => !seen.has(g.line) && seen.add(g.line))
+    .sort((a, b) => a.line - b.line);
+}
+
+/**
+ * Blocks Math Mode cannot show: custom operators and the machine learning blocks (based
+ * on QHAna) are not compiled into a quantum circuit, so they have no state or steps.
+ */
+function noCircuitKind(node: Node): string | null {
+  if (node.type === PluginNode) return "QML block (QHAna)";
+  if (node.type === AlgorithmNode) return "custom quantum operator";
+  if (node.type === ClassicalAlgorithmNode) return "custom classical operator";
+  if (node.type === StatePreparationNode) {
+    if (node.data?.label === "Custom Encoding") return "custom encoding";
+    if (
+      node.data?.label === "Prepare State" &&
+      node.data?.quantumStateName === "Custom State"
+    )
+      return "custom state";
+  }
+  return null;
+}
+
+function NoCircuitNotice({
+  nodes,
+  onShow,
+}: {
+  nodes: Node[];
+  onShow: (nodeId: string) => void;
+}) {
+  const blocks = nodes.flatMap((n) => {
+    const kind = noCircuitKind(n);
+    if (!kind) return [];
+    const name = n.data?.pluginName ?? n.data?.label ?? n.type;
+    return [{ id: n.id, kind, name: String(name) }];
+  });
+  if (blocks.length === 0) return null;
+  return (
+    <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <p className="font-semibold">
+        ⚠ {blocks.length} block{blocks.length === 1 ? "" : "s"} cannot be shown
+        in Math Mode
+      </p>
+      <p className="mt-0.5 leading-snug">
+        Custom blocks (operators, encodings, states) and QML blocks (based on
+        QHAna) do not return a quantum circuit, so there is no state or
+        intermediate step for them. They are left out of the Dirac notation
+        below.
+      </p>
+      <ul className="mt-1 flex flex-wrap gap-1">
+        {blocks.map((b) => (
+          <li key={b.id}>
+            <button
+              onClick={() => onShow(b.id)}
+              className="rounded border border-amber-300 bg-white px-1.5 py-0.5 hover:bg-amber-100"
+              title="Show this block on the canvas"
+            >
+              {b.name} <span className="text-amber-600">· {b.kind}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function ComponentsView({
   components,
   onGetCircuitSvg,
@@ -848,10 +1032,16 @@ const HIGHLIGHT_CLASS =
  * Lets canvas nodes light up blue for a moment (like a clicked step) and scrolls to the
  * first of them.
  */
+// Each highlight fades out after a moment; a newer one (e.g. the next clicked step) must
+// not be removed by the timers of an earlier one.
+let highlightGeneration = 0;
+
 function highlightCanvasNodes(
   setNodes: (fn: (nds: Node[]) => Node[]) => void,
   nodeIds: string[],
 ) {
+  const generation = ++highlightGeneration;
+  const isLatest = () => generation === highlightGeneration;
   const idSet = new Set(nodeIds);
   setNodes((nds: Node[]) =>
     nds.map((n) => ({
@@ -865,6 +1055,18 @@ function highlightCanvasNodes(
     })),
   );
   setTimeout(() => {
+    if (!isLatest()) return;
+    // the nodes of an earlier highlight that are not lit up again go dark right away
+    document
+      .querySelectorAll<HTMLElement>(".react-flow__node")
+      .forEach((el) => {
+        if (idSet.has(el.getAttribute("data-id") ?? "")) return;
+        if (!el.style.outline) return;
+        el.style.outline = "";
+        el.style.outlineOffset = "";
+        el.style.boxShadow = "";
+        el.style.zIndex = "";
+      });
     let firstEl: HTMLElement | null = null;
     for (const nodeId of nodeIds) {
       const el = document.querySelector(
@@ -884,6 +1086,7 @@ function highlightCanvasNodes(
     // zwischen mehreren Nodes hin- und herspringt.
     firstEl?.scrollIntoView({ behavior: "smooth", block: "center" });
     setTimeout(() => {
+      if (!isLatest()) return;
       for (const nodeId of nodeIds) {
         const el = document.querySelector(
           `[data-id="${nodeId}"]`,
@@ -897,6 +1100,7 @@ function highlightCanvasNodes(
     }, 1500);
   }, 50);
   setTimeout(() => {
+    if (!isLatest()) return;
     setNodes((nds: Node[]) =>
       nds.map((n) => ({
         ...n,
@@ -1004,8 +1208,13 @@ function ComponentSection({
       clicked,
       stepNodeIds.filter((id) => id !== clicked.nodeId),
     );
+    // the circuit level the step lies in is opened too, e.g. a collapsed group of gates
+    const reveal = expandGroupsAround(result.nodes, result.highlight);
+    const resultNodes = reveal ?? result.nodes;
     if (!result.changed) {
-      if (expanded) setTimeout(() => highlightNodes(result.highlight), 150);
+      if (reveal) setNodes(reveal);
+      if (expanded || reveal)
+        setTimeout(() => highlightNodes(result.highlight), 150);
       else highlightNodes(result.highlight);
       return;
     }
@@ -1017,7 +1226,7 @@ function ComponentSection({
       }),
       redoStack: [],
     }));
-    setNodes(result.nodes);
+    setNodes(resultNodes);
     setEdges(result.edges);
     // wait until the circuit is rendered
     setTimeout(() => highlightNodes(result.highlight), 150);
@@ -1190,7 +1399,7 @@ function ExportAllButton({
             pngBase64,
             stepTree: buildStepTree(
               stepsResult.steps,
-              useStore.getState().nodes,
+              withOpenedBlocks(useStore.getState().nodes),
             ),
             qasm: component.qasm,
           });

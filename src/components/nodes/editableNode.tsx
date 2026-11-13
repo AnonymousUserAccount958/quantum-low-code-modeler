@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { classicalConstructColor, quantumConstructColor } from "@/constants";
 import { awareness } from "@/yjs";
 import { propertyErrors as propertyErrorsOf } from "@/lib/propertyConstraints";
+import { displayInputType } from "@/lib/dataTypeRules";
 
 const selector = (state: any) => ({
   selectedNode: state.selectedNode,
@@ -392,7 +393,7 @@ export const EditableNode = memo((node: Node) => {
                         `Input ${index + 1}`}
                     </span>
                     <span className="text-[10px] text-gray-600">
-                      type: {input.type || "any"}
+                      type: {displayInputType(input.type)}
                     </span>
                   </div>
                 </div>

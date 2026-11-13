@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 641 1633" width="641" height="1633">
+  <!-- Controlled phase gate CP(λ) for the Explorer mode, same layout as czBeginner.png:
+       the control (lamp with 1), and what the phase gate does to the target |0⟩ and |1⟩ -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#000"/>
+    </marker>
+  </defs>
+  <g font-family="Arial, Helvetica, sans-serif" fill="#000">
+    <!-- title -->
+    <text x="320" y="102" font-size="80" text-anchor="middle">CP(λ)</text>
+
+    <!-- control: lamp lit with 1 -->
+    <line x1="150" y1="293" x2="218" y2="340" stroke="#000" stroke-width="6"/>
+    <line x1="315" y1="268" x2="315" y2="305" stroke="#000" stroke-width="6"/>
+    <line x1="486" y1="294" x2="419" y2="341" stroke="#000" stroke-width="6"/>
+    <path d="M200,487 C172,400 222,322 315,322 C408,322 458,400 430,487" fill="none" stroke="#000" stroke-width="5"/>
+    <line x1="177" y1="489" x2="466" y2="487" stroke="#000" stroke-width="5"/>
+    <rect x="276" y="360" width="76" height="96" fill="none" stroke="#0f2a3a" stroke-width="5"/>
+    <text x="314" y="433" font-size="64" text-anchor="middle">1</text>
+
+    <!-- arrow down -->
+    <rect x="290" y="724" width="48" height="92"/>
+    <polygon points="263,812 365,812 314,862"/>
+
+    <!-- effect on the target -->
+    <rect x="12" y="997" width="625" height="633" fill="none" stroke="#000" stroke-width="6"/>
+    <line x1="12" y1="1313" x2="637" y2="1313" stroke="#000" stroke-width="6"/>
+
+    <!-- |0⟩ stays |0⟩ -->
+    <rect x="37" y="1103" width="72" height="96" fill="none" stroke="#0f2a3a" stroke-width="5"/>
+    <text x="73" y="1174" font-size="64" text-anchor="middle">0</text>
+    <text x="250" y="1118" font-size="52" text-anchor="middle">P(λ)</text>
+    <line x1="190" y1="1148" x2="330" y2="1148" stroke="#000" stroke-width="6" marker-end="url(#arrow)"/>
+    <rect x="432" y="1103" width="72" height="96" fill="none" stroke="#0f2a3a" stroke-width="5"/>
+    <text x="468" y="1174" font-size="64" text-anchor="middle">0</text>
+
+    <!-- |1⟩ gets the phase e^{iλ} -->
+    <rect x="37" y="1432" width="72" height="96" fill="none" stroke="#0f2a3a" stroke-width="5"/>
+    <text x="73" y="1503" font-size="64" text-anchor="middle">1</text>
+    <text x="250" y="1442" font-size="52" text-anchor="middle">P(λ)</text>
+    <line x1="190" y1="1472" x2="330" y2="1472" stroke="#000" stroke-width="6" marker-end="url(#arrow)"/>
+    <text x="352" y="1503" font-size="60">e<tspan font-size="36" dy="-30">iλ</tspan></text>
+    <rect x="432" y="1435" width="72" height="96" fill="none" stroke="#0f2a3a" stroke-width="5"/>
+    <text x="468" y="1506" font-size="64" text-anchor="middle">1</text>
+  </g>
+</svg>

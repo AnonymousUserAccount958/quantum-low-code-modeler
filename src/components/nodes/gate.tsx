@@ -232,10 +232,11 @@ export const GateNode = memo((node: Node) => {
                 className="w-14 h-19 object-fit object-center translate-y-1"
               />
             ) : data.label === "CP(λ)" ? (
+              // block + mx-auto: centered in the gate, not sitting on the text baseline
               <img
                 src="CP.png"
                 alt="CP gate"
-                className="w-10 h-22 object-fit object-center"
+                className="block w-10 h-auto mx-auto"
               />
             ) : data.label === "RX(θ)" ? (
               <span>
@@ -359,9 +360,10 @@ export const GateNode = memo((node: Node) => {
               />
             ) : data.label === "CP(λ)" ? (
               <img
-                src="CP.png"
-                alt="CP gate"
-                className="w-10 h-22 object-fit object-center"
+                src="cpBeginner.svg"
+                alt="Controlled-Phase gate"
+                style={{ width: "80px", height: "200px", marginLeft: "68px" }}
+                className=""
               />
             ) : data.label === "H" ? (
               <img

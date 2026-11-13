@@ -27,6 +27,7 @@ import {
   toTypeArray,
 } from "@/lib/portTypes";
 import { Template } from "@/components/panels/categories";
+import { fileOrStringConnectionError } from "@/lib/dataTypeRules";
 import { DomainProfile } from "@/components/modals/domainProfileModal";
 
 export type NodeData = {
@@ -1183,7 +1184,22 @@ export const useStore = create<RFState>()(
             insertEdge = true;
           }
 
-          if (nodeDataSource.parentNode !== nodeDataTarget.parentNode) {
+          // a connection must not leave an if/else or repeat block; plain groups (e.g. the
+          // circuit level of an oracle, whose gates are fed by a Splitter outside of it)
+          // are only a visual frame and can be crossed
+          const scopeOf = (n: Node) => {
+            let parentId = n.parentNode;
+            const seen = new Set<string>();
+            while (parentId && !seen.has(parentId)) {
+              seen.add(parentId);
+              const parent = currentNodes.find((p) => p.id === parentId);
+              if (!parent) return parentId;
+              if (parent.type !== "groupNode") return parent.id;
+              parentId = parent.parentNode;
+            }
+            return undefined;
+          };
+          if (scopeOf(nodeDataSource) !== scopeOf(nodeDataTarget)) {
             insertEdge = false;
           }
           if (nodeDataSource.id === nodeDataTarget.parentNode) {
@@ -1285,6 +1301,19 @@ export const useStore = create<RFState>()(
 
           return parseInt(match[0], 10);
         };
+
+        // File and String only go into QML blocks that expect a file
+        {
+          const fileOrStringError = fileOrStringConnectionError(
+            get().nodes.find((n) => n.id === connection.source),
+            get().nodes.find((n) => n.id === connection.target),
+            connection.targetHandle,
+          );
+          if (fileOrStringError) {
+            setTypeError(fileOrStringError);
+            return false;
+          }
+        }
 
         // TYPE CHECK
         let sourceType = getNodeOutputType(

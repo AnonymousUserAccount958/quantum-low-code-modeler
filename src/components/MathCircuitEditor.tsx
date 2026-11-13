@@ -11,6 +11,7 @@ import { qasmToDiracSteps } from "./utils/qasmToDirac";
 import { detectStatePreparations } from "@/lib/recognizeStates";
 import { analyzeGrover } from "./utils/groverSegments";
 import { useStore } from "@/config/store";
+import { QubitOrderNote, basisValueSuffix } from "./QubitOrder";
 import {
   GATE_CATALOG,
   circuitFromQasm,
@@ -353,9 +354,12 @@ export function MathCircuitEditor({
             </button>
           ))}
           <span className="font-mono text-gray-800">
-            <Tex latex={`${psi(0)} = |${initialBits}\\rangle`} />
+            <Tex
+              latex={`${psi(0)} = |${initialBits}\\rangle${basisValueSuffix(`|${initialBits}⟩`)}`}
+            />
           </span>
         </div>
+        <QubitOrderNote numQubits={numQubits} />
         <p className="text-[11px] text-gray-400 leading-snug">
           Every qubit physically starts in |0⟩. A qubit that starts in |1⟩ is
           prepared with an X gate when the circuit is applied to the canvas.
@@ -562,6 +566,9 @@ export function MathCircuitEditor({
                       |ψ{subscript(index + 1)}⟩ ={" "}
                     </span>
                     {preview.steps[index].unicode}
+                    <span className="text-gray-400">
+                      {basisValueSuffix(preview.steps[index].unicode)}
+                    </span>
                   </div>
                 )}
               </div>
@@ -618,6 +625,11 @@ export function MathCircuitEditor({
             Result: |ψ{subscript(gates.length)}⟩ ={" "}
           </span>
           {preview.steps.at(-1)?.unicode ?? preview.initial.unicode}
+          <span className="text-gray-400">
+            {basisValueSuffix(
+              preview.steps.at(-1)?.unicode ?? preview.initial.unicode,
+            )}
+          </span>
         </div>
       )}
       {hasErrors && (

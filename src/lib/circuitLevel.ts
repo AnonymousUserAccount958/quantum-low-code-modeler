@@ -16,7 +16,7 @@
  * Prepare State and Basis Encoding do not need the compiled QASM (see
  * statePreparationGroups.ts). Grover's algorithm first opens as its building blocks.
  *
- * Not expanded: circuit primitives (gates, Qubit Circuit, MCMT, Splitter, Merger),
+ * Not expanded: circuit primitives (gates, Qubit Circuit, Splitter, Merger),
  * data types, templates and machine learning plugins.
  */
 
@@ -30,6 +30,7 @@ import {
   GroverDiffuserNode,
   GroverNode,
   InverseQFTNode,
+  MCMTGateNode,
   MergerNode,
   OperatorNode,
   QAOANode,
@@ -38,10 +39,11 @@ import {
   StatePreparationNode,
   UniversalOracleNode,
 } from "@/constants";
-import { parseQasm } from "@/components/utils/qasmToDirac";
+import { parseQasm, simulate } from "@/components/utils/qasmToDirac";
 import { detectGroverSegments } from "@/components/utils/groverSegments";
 import { circuitSignature, qasmToNodes, type QasmNodes } from "./qasmToNodes";
 import { expandGroverToSubprocess, readGroverSettings } from "./expandGrover";
+import { fitGroupsAround, makeRoom } from "./makeRoom";
 import { expansionFor, isBasisEncoding } from "./statePreparationGroups";
 
 /** Blocks that have a circuit level. */
@@ -56,10 +58,20 @@ const CIRCUIT_LEVEL_TYPES = new Set([
   QAOANode,
   OperatorNode,
   AlgorithmNode,
+  MCMTGateNode,
 ]);
 
 export function hasCircuitLevel(node: Node | undefined): boolean {
-  return !!node && CIRCUIT_LEVEL_TYPES.has(node.type ?? "");
+  if (!node || !CIRCUIT_LEVEL_TYPES.has(node.type ?? "")) return false;
+  // the gates of an MCMT gate are only clear once its controls and targets are set
+  if (node.type === MCMTGateNode) return mcmtSizeKnown(node.data);
+  return true;
+}
+
+/** True if the number of controls and targets of an MCMT gate are positive integers. */
+export function mcmtSizeKnown(data: Record<string, any> | undefined): boolean {
+  const positive = (v: unknown) => /^[1-9]\d*$/.test(String(v ?? "").trim());
+  return positive(data?.numControls) && positive(data?.numTargets);
 }
 
 /**
@@ -101,6 +113,8 @@ export interface CircuitLevelSnapshot {
   /** How far the nodes right of the block were moved to make room. */
   dx: number;
   signature: string;
+  /** Gate node of each step of the block, so Math Mode can highlight its steps. */
+  gateNodeIds?: string[];
 }
 
 const baseData = {
@@ -328,6 +342,14 @@ export function expandNodeFromSection(
   if (section.gates.length === 0) {
     return "This block compiles to no gates, there is no circuit to show.";
   }
+  // OpenQASM 3's general single-qubit gate u(θ,φ,λ) is the U3 gate node on the canvas
+  // (e.g. what Matrix Encoding compiles to)
+  section = {
+    ...section,
+    gates: section.gates.map((g) =>
+      g.name === "u" || g.name === "U" ? { ...g, name: "u3" } : g,
+    ),
+  };
   const unsupported = section.gates.find((g) =>
     g.name.startsWith("mc_")
       ? !MULTI_CONTROLLED_BASES.has(g.name.slice(3))
@@ -675,6 +697,9 @@ export function buildCircuitLevel(
   const removedEdges = edges.filter(
     (e) => removed.has(e.source) || removed.has(e.target),
   );
+  const gateNodeIds = built.gateNodeIds.filter((id) =>
+    inner.some((n) => n.id === id),
+  );
   group = {
     ...group,
     position: { x: groupX, y: origin.y },
@@ -687,39 +712,286 @@ export function buildCircuitLevel(
         removedEdges: structuredClone(removedEdges),
         dx,
         signature: circuitSignature(inner),
+        gateNodeIds,
       } satisfies CircuitLevelSnapshot,
     },
   };
 
   // make room: move the nodes right of the block, and widen its parent group
-  outside = outside
-    .filter((n) => !removed.has(n.id))
-    .map((n) => {
-      if (n.id === parentNode && dx > 0) {
-        return {
-          ...n,
-          style: { ...n.style, width: widthOf(n, 400) + dx },
-        };
-      }
-      return n.parentNode === parentNode &&
-        n.position.x > compact.position.x &&
-        dx > 0
-        ? { ...n, position: { ...n.position, x: n.position.x + dx } }
-        : n;
-    });
+  outside = makeRoom(
+    outside.filter((n) => !removed.has(n.id)),
+    compact,
+    dx,
+  );
 
   const keptEdges = edges.filter(
     (e) => !removed.has(e.source) && !removed.has(e.target),
   );
   return {
-    // React Flow requires a parent to come before its children
-    nodes: [...outside, group, ...inner, ...interfaceNodes],
+    // React Flow requires a parent to come before its children; the groups around the
+    // block grow until the circuit (and its Splitter/Merger) fits inside
+    nodes: fitGroupsAround(
+      [...outside, group, ...inner, ...interfaceNodes],
+      parentNode,
+    ),
     edges: [...keptEdges, ...newEdges, ...innerEdges],
     groupId,
-    gateNodeIds: built.gateNodeIds.filter((id) =>
-      inner.some((n) => n.id === id),
-    ),
+    gateNodeIds,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reading an edited circuit level back
+// ---------------------------------------------------------------------------
+
+/** QASM name of a gate node, from its label (see GATE_LABEL_MAP in qasmToNodes.ts). */
+const GATE_NAMES: Record<string, string> = {
+  H: "h",
+  X: "x",
+  Y: "y",
+  Z: "z",
+  S: "s",
+  T: "t",
+  SDG: "sdg",
+  TDG: "tdg",
+  CNOT: "cx",
+  CZ: "cz",
+  CY: "cy",
+  CH: "ch",
+  SWAP: "swap",
+  Toffoli: "ccx",
+  CSWAP: "cswap",
+  "RX(θ)": "rx",
+  "RY(θ)": "ry",
+  "RZ(θ)": "rz",
+  "CRX(θ)": "crx",
+  "CRY(θ)": "cry",
+  "CRZ(θ)": "crz",
+  "U1(λ)": "u1",
+  "U2(φ,λ)": "u2",
+  "U3(θ,φ,λ)": "u3",
+  "P(λ)": "p",
+  "CP(λ)": "cp",
+  I: "id",
+};
+const ANGLE_GATES = new Set([
+  "rx",
+  "ry",
+  "rz",
+  "crx",
+  "cry",
+  "crz",
+  "u1",
+  "u2",
+  "u3",
+  "p",
+  "cp",
+]);
+const THREE_WIRES = new Set(["ccx", "cswap"]);
+const TWO_WIRES = new Set([
+  "cx",
+  "cz",
+  "cy",
+  "ch",
+  "swap",
+  "crx",
+  "cry",
+  "crz",
+  "cp",
+]);
+
+/**
+ * The gates of a circuit-level group as it is now on the canvas (also with gates the
+ * user added or removed), in circuit order and on the qubits of the block's register:
+ * the wires are followed from where the register enters the group (the Splitter, or the
+ * qubits that were merged before the block) through the gate nodes.
+ */
+export function circuitOfGroup(
+  group: Node,
+  nodes: Node[],
+  edges: Edge[],
+): { numQubits: number; gates: SectionGate[] } | string {
+  const snapshot = group.data?.circuitLevel as CircuitLevelSnapshot | undefined;
+  const inside = descendantsOf(group.id, nodes);
+  const gateNodes = nodes.filter(
+    (n) =>
+      inside.has(n.id) &&
+      ((n.type === "gateNode" && n.data?.label !== "Qubit Circuit") ||
+        n.type === MCMTGateNode),
+  );
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const isGate = new Set(gateNodes.map((n) => n.id));
+
+  const wiresOf = (n: Node): number => {
+    if (n.type === MCMTGateNode)
+      return (
+        (parseInt(String(n.data?.numControls ?? 1), 10) || 1) +
+        (parseInt(String(n.data?.numTargets ?? 1), 10) || 1)
+      );
+    const name = GATE_NAMES[n.data?.label] ?? "";
+    return THREE_WIRES.has(name) ? 3 : TWO_WIRES.has(name) ? 2 : 1;
+  };
+
+  // where the register enters: Splitter output k, or the k-th qubit merged before
+  const removedMergers = new Set(
+    (snapshot?.removedNodes ?? [])
+      .filter((r) => r.type === MergerNode)
+      .map((r) => r.id),
+  );
+  let freshQubit = 1000;
+  const extraQubits = new Map<string, number>();
+  const externalQubit = (sourceId: string, handle: string): number => {
+    const source = byId.get(sourceId);
+    if (
+      source?.type === SplitterNode &&
+      source.data?.circuitLevelOf === group.id
+    )
+      return handleIndex(handle, sourceId);
+    const merged = (snapshot?.removedEdges ?? []).find(
+      (e) =>
+        removedMergers.has(e.target) &&
+        e.source === sourceId &&
+        e.sourceHandle === handle,
+    );
+    if (merged) return handleIndex(merged.targetHandle, merged.target);
+    // a qubit of its own inside the group (e.g. an ancilla), or a single-qubit register
+    if (source && inside.has(source.id)) {
+      const key = `${sourceId}|${handle}`;
+      if (!extraQubits.has(key)) extraQubits.set(key, freshQubit++);
+      return extraQubits.get(key)!;
+    }
+    return 0;
+  };
+
+  const wireQubits = new Map<string, number[]>();
+  const visiting = new Set<string>();
+  const qubitsOf = (gate: Node): number[] | string => {
+    const known = wireQubits.get(gate.id);
+    if (known) return known;
+    if (visiting.has(gate.id)) return "The gates in this group form a loop.";
+    visiting.add(gate.id);
+    const qubits: number[] = [];
+    for (let w = 0; w < wiresOf(gate); w++) {
+      const edge = edges.find(
+        (e) =>
+          e.target === gate.id && handleIndex(e.targetHandle, gate.id) === w,
+      );
+      if (!edge)
+        return `The gate ${gate.data?.label} is not connected on all of its wires.`;
+      const source = byId.get(edge.source);
+      if (source && isGate.has(source.id)) {
+        const before = qubitsOf(source);
+        if (typeof before === "string") return before;
+        qubits.push(before[handleIndex(edge.sourceHandle, source.id)] ?? 0);
+      } else {
+        qubits.push(externalQubit(edge.source, edge.sourceHandle ?? ""));
+      }
+    }
+    visiting.delete(gate.id);
+    wireQubits.set(gate.id, qubits);
+    return qubits;
+  };
+
+  for (const gate of gateNodes) {
+    const result = qubitsOf(gate);
+    if (typeof result === "string") return result;
+  }
+
+  // circuit order: a gate comes after the gates that feed it (left to right otherwise)
+  const order: Node[] = [];
+  const placed = new Set<string>();
+  const remaining = [...gateNodes].sort(
+    (a, b) => a.position.x - b.position.x || a.position.y - b.position.y,
+  );
+  while (remaining.length > 0) {
+    const next = remaining.findIndex((g) =>
+      edges
+        .filter((e) => e.target === g.id && isGate.has(e.source))
+        .every((e) => placed.has(e.source)),
+    );
+    if (next < 0) return "The gates in this group form a loop.";
+    const [gate] = remaining.splice(next, 1);
+    placed.add(gate.id);
+    order.push(gate);
+  }
+
+  // qubits of their own get the indices after the register
+  const register = Number(
+    nodes.find(
+      (n) => n.type === SplitterNode && n.data?.circuitLevelOf === group.id,
+    )?.data?.numberOutputs ?? 0,
+  );
+  const used = [...wireQubits.values()].flat();
+  const registerSize = Math.max(
+    register,
+    ...used.filter((q) => q < 1000).map((q) => q + 1),
+    1,
+  );
+  const extra = [...new Set(used.filter((q) => q >= 1000))].sort(
+    (a, b) => a - b,
+  );
+  const local = (q: number) => (q < 1000 ? q : registerSize + extra.indexOf(q));
+
+  const gates: SectionGate[] = order.map((n) => {
+    const qubits = wireQubits.get(n.id)!.map(local);
+    if (n.type === MCMTGateNode) {
+      return {
+        name: `mc_${String(n.data?.baseGate ?? "x")
+          .replace(/\(.*\)/, "")
+          .toLowerCase()}`,
+        qubits,
+        params: [],
+        numControls: parseInt(String(n.data?.numControls ?? 1), 10) || 1,
+      };
+    }
+    const params = String(n.data?.parameter ?? "")
+      .split(",")
+      .map((p) => parseFloat(p))
+      .filter((p) => Number.isFinite(p));
+    const name =
+      GATE_NAMES[n.data?.label] ?? String(n.data?.label).toLowerCase();
+    return {
+      name,
+      qubits,
+      params: ANGLE_GATES.has(name) ? params : [],
+    };
+  });
+  return { numQubits: registerSize + extra.length, gates };
+}
+
+/**
+ * The states a phase oracle marks, read from its (edited) circuit: the basis states x of
+ * the register with O|x⟩ = -|x⟩, as numbers with q0 as the least significant bit. Null
+ * if the circuit is not a phase oracle (it changes basis states or applies other phases).
+ */
+export function phaseOracleMarkedStates(circuit: {
+  numQubits: number;
+  gates: SectionGate[];
+}): number[] | null {
+  const n = circuit.numQubits;
+  if (n < 1 || n > 10) return null;
+  const marked: number[] = [];
+  for (let x = 0; x < 2 ** n; x++) {
+    const prepare = Array.from({ length: n }, (_, q) => q)
+      .filter((q) => (x >> q) & 1)
+      .map((q) => ({ name: "x", qubits: [q], params: [] as number[] }));
+    const { sv } = simulate(n, [...prepare, ...circuit.gates] as never);
+    // statevector index: q0 is the most significant bit
+    let index = 0;
+    for (let q = 0; q < n; q++) if ((x >> q) & 1) index |= 1 << (n - 1 - q);
+    const amp = sv[index];
+    const others = sv.some(
+      (c, i) => i !== index && Math.hypot(c.re, c.im) > 1e-6,
+    );
+    if (
+      others ||
+      Math.abs(amp.im) > 1e-6 ||
+      Math.abs(Math.abs(amp.re) - 1) > 1e-6
+    )
+      return null;
+    if (amp.re < 0) marked.push(x);
+  }
+  return marked;
 }
 
 /** True if the circuit inside a circuit-level group was edited after it was opened. */
@@ -741,6 +1013,8 @@ export function restoreCompactModel(
   group: Node,
   nodes: Node[],
   edges: Edge[],
+  /** Settings of the block that changed on the circuit level, e.g. marked states. */
+  dataChanges?: Record<string, unknown>,
 ): { nodes: Node[]; edges: Edge[] } {
   const snapshot: CircuitLevelSnapshot = group.data.circuitLevel;
   const inside = descendantsOf(group.id, nodes);
@@ -755,22 +1029,12 @@ export function restoreCompactModel(
       n.type !== SplitterNode &&
       n.type !== MergerNode,
   );
+  if (compact && dataChanges)
+    compact.data = { ...compact.data, ...dataChanges };
   const { dx } = snapshot;
-  const parentNode = group.parentNode;
 
-  let others = nodes
-    .filter((n) => !inside.has(n.id))
-    .map((n) => {
-      if (n.id === parentNode && dx > 0) {
-        return { ...n, style: { ...n.style, width: widthOf(n, 400) - dx } };
-      }
-      return compact &&
-        n.parentNode === parentNode &&
-        n.position.x > compact.position.x &&
-        dx > 0
-        ? { ...n, position: { ...n.position, x: n.position.x - dx } }
-        : n;
-    });
+  let others = nodes.filter((n) => !inside.has(n.id));
+  if (compact) others = makeRoom(others, compact, -dx);
 
   const exists = new Set([...others, ...restored].map((n) => n.id));
   const result: Edge[] = edges.filter(
@@ -862,6 +1126,177 @@ export type Expanded = {
 };
 
 /**
+ * Which building block of a Grover subprocess shows each compiled step of the Grover
+ * node: `blockIds` are the blocks in order (Prepare State, then Oracle and Diffuser per
+ * iteration), `own` the section of the Grover node in the compiled QASM.
+ */
+function groverStepMapping(
+  blockIds: string[],
+  own: NodeSection | null,
+): { stepNodeIds: string[]; inner: NonNullable<Expanded["inner"]> } {
+  const segments = own ? detectGroverSegments(own.gates) : null;
+  const stepNodeIds: string[] = [];
+  const inner: NonNullable<Expanded["inner"]> = [];
+  if (!own || !segments) return { stepNodeIds, inner };
+  const register = own.outputs[0] ?? [
+    ...new Set(own.gates.flatMap((g) => g.qubits)),
+  ];
+  for (const seg of segments) {
+    const blockIndex =
+      seg.kind === "superposition"
+        ? 0
+        : seg.kind === "oracle"
+          ? 2 * (seg.iteration ?? 1) - 1
+          : 2 * (seg.iteration ?? 1);
+    const blockId = blockIds[blockIndex];
+    if (!blockId) continue;
+    for (let k = seg.start; k <= seg.end; k++) stepNodeIds[k] = blockId;
+    inner.push({
+      blockId,
+      start: seg.start,
+      section: {
+        gates: own.gates.slice(seg.start, seg.end + 1),
+        inputs: seg.kind === "superposition" ? [] : [register],
+        outputs: [register],
+      },
+    });
+  }
+  return { stepNodeIds, inner };
+}
+
+/**
+ * The canvas nodes plus the blocks that were opened on it (a Grover node that became a
+ * subprocess, a block that became its circuit level), restored from the snapshots of
+ * their groups and placed where they were. Math Mode's steps keep referring to these
+ * blocks until the model is recompiled, so they are needed to group the steps.
+ */
+export function withOpenedBlocks(nodes: Node[]): Node[] {
+  const present = new Set(nodes.map((n) => n.id));
+  const restored: Node[] = [];
+  const add = (n: Node) => {
+    if (present.has(n.id)) return;
+    present.add(n.id);
+    restored.push(n);
+  };
+  for (const group of nodes) {
+    if (group.type !== GroupNode) continue;
+    const subprocess = group.data?.subprocess;
+    if (subprocess?.id) {
+      add({
+        id: subprocess.id,
+        type: subprocess.type ?? GroverNode,
+        data: subprocess.data ?? {},
+        position: group.position,
+        ...(group.parentNode ? { parentNode: group.parentNode } : {}),
+      });
+    }
+    const snapshot = group.data?.circuitLevel as
+      | CircuitLevelSnapshot
+      | undefined;
+    snapshot?.removedNodes?.forEach(add);
+  }
+  return restored.length ? [...nodes, ...restored] : nodes;
+}
+
+/** The circuit-level group a block was opened into (by Math Mode or a button). */
+function circuitLevelGroupOf(nodes: Node[], blockId: string): Node | undefined {
+  return nodes.find(
+    (n) =>
+      n.type === GroupNode &&
+      (
+        n.data?.circuitLevel as CircuitLevelSnapshot | undefined
+      )?.removedNodes?.some((r) => r.id === blockId),
+  );
+}
+
+/** The gate nodes of a circuit-level group, in the order of the block's steps. */
+function gateNodesOf(group: Node, nodes: Node[]): string[] {
+  const exists = new Set(nodes.map((n) => n.id));
+  const stored = (
+    group.data?.circuitLevel as CircuitLevelSnapshot
+  ).gateNodeIds?.filter((id) => exists.has(id));
+  if (stored?.length) return stored;
+  // older groups: the gates inside, left to right
+  const inside = descendantsOf(group.id, nodes);
+  return nodes
+    .filter((n) => inside.has(n.id) && n.type === "gateNode")
+    .sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y)
+    .map((n) => n.id);
+}
+
+/**
+ * A block that is no longer on the canvas because it was opened there without Math
+ * Mode (e.g. "▸ Expand" of the Grover node, "▸ Circuit" of a block): finds the group it
+ * became and remembers which node shows each of its steps, like opening it from a step.
+ */
+function adoptOpenedBlock(
+  opened: OpenedBlocks,
+  nodes: Node[],
+  qasm: string | null,
+  nodeId: string,
+): void {
+  const own = qasm ? parseNodeSection(qasm, nodeId) : null;
+  const subprocess = nodes.find(
+    (n) => n.type === GroupNode && n.data?.subprocess?.id === nodeId,
+  );
+  if (subprocess) {
+    // its building blocks, left to right; a block opened further is its group
+    const blocks = nodes
+      .filter((n) => n.parentNode === subprocess.id)
+      .flatMap((n) => {
+        const compact = (
+          n.data?.circuitLevel as CircuitLevelSnapshot | undefined
+        )?.removedNodes?.find((r) =>
+          [
+            StatePreparationNode,
+            UniversalOracleNode,
+            GroverDiffuserNode,
+          ].includes(r.type ?? ""),
+        );
+        if (compact) return [{ id: compact.id, x: n.position.x }];
+        return [
+          StatePreparationNode,
+          UniversalOracleNode,
+          GroverDiffuserNode,
+        ].includes(n.type ?? "")
+          ? [{ id: n.id, x: n.position.x }]
+          : [];
+      })
+      .sort((a, b) => a.x - b.x)
+      .map((b) => b.id);
+    const { stepNodeIds, inner } = groverStepMapping(blocks, own);
+    if (stepNodeIds.length === 0) return;
+    opened.steps.set(
+      nodeId,
+      Array.from(
+        { length: own?.gates.length ?? stepNodeIds.length },
+        (_, k) => stepNodeIds[k] ?? stepNodeIds.at(-1) ?? nodeId,
+      ),
+    );
+    for (const i of inner) {
+      opened.inner.set(i.blockId, {
+        owner: nodeId,
+        start: i.start,
+        section: i.section,
+      });
+    }
+    return;
+  }
+  const group = circuitLevelGroupOf(nodes, nodeId);
+  if (group) {
+    const gates = gateNodesOf(group, nodes);
+    if (gates.length === 0) return;
+    opened.steps.set(
+      nodeId,
+      Array.from(
+        { length: own?.gates.length ?? gates.length },
+        (_, k) => gates[k] ?? gates.at(-1)!,
+      ),
+    );
+  }
+}
+
+/**
  * Opens a block one level: Grover into its building blocks, every other block into its
  * gates. `qasm` is the compiled model; it is only needed for blocks whose circuit is not
  * known in advance.
@@ -879,39 +1314,13 @@ export function openBlock(
     const result = expandGroverToSubprocess(node, nodes, edges, settings);
     const blocks = result.nodes.filter((n) => n.parentNode === result.groupId);
     const own = section ?? (qasm ? parseNodeSection(qasm, node.id) : null);
-    const segments = own ? detectGroverSegments(own.gates) : null;
-    const stepNodeIds: string[] = [];
-    const inner: Expanded["inner"] = [];
-    if (own && segments) {
-      const register = own.outputs[0] ?? [
-        ...new Set(own.gates.flatMap((g) => g.qubits)),
-      ];
-      for (const seg of segments) {
-        const blockIndex =
-          seg.kind === "superposition"
-            ? 0
-            : seg.kind === "oracle"
-              ? 2 * (seg.iteration ?? 1) - 1
-              : 2 * (seg.iteration ?? 1);
-        const block = blocks[blockIndex];
-        if (!block) continue;
-        for (let k = seg.start; k <= seg.end; k++) stepNodeIds[k] = block.id;
-        inner.push({
-          blockId: block.id,
-          start: seg.start,
-          section: {
-            gates: own.gates.slice(seg.start, seg.end + 1),
-            inputs: seg.kind === "superposition" ? [] : [register],
-            outputs: [register],
-          },
-        });
-      }
-    }
     return {
       nodes: result.nodes,
       edges: result.edges,
-      stepNodeIds,
-      inner,
+      ...groverStepMapping(
+        blocks.map((b) => b.id),
+        own,
+      ),
     };
   }
 
@@ -972,6 +1381,20 @@ export function followStep(
   let changed = false;
   const { nodeId } = clicked;
 
+  const exists = (id: string) => nodes.some((n) => n.id === id);
+  // the canvas changed since (e.g. a circuit level was collapsed back into its block):
+  // forget what was remembered and find it again on the canvas
+  if (opened.steps.get(nodeId)?.some((id) => !exists(id))) {
+    opened.steps.delete(nodeId);
+    for (const [blockId, info] of opened.inner) {
+      if (info.owner === nodeId) opened.inner.delete(blockId);
+    }
+  }
+  // opened on the canvas without Math Mode (e.g. with "▸ Expand" or "▸ Circuit")
+  if (!opened.steps.has(nodeId) && !exists(nodeId)) {
+    adoptOpenedBlock(opened, nodes, qasm, nodeId);
+  }
+
   if (!opened.steps.has(nodeId)) {
     const node = nodes.find((n) => n.id === nodeId);
     const own = qasm ? parseNodeSection(qasm, nodeId) : null;
@@ -1002,6 +1425,19 @@ export function followStep(
 
   const steps = opened.steps.get(nodeId);
   if (steps) {
+    // building blocks that were already opened on the canvas (e.g. with "▸ Circuit"):
+    // their steps are shown by the gates of their circuit-level group
+    for (const [blockId, info] of opened.inner) {
+      if (info.owner !== nodeId) continue;
+      if (current.nodes.some((n) => n.id === blockId)) continue;
+      const group = circuitLevelGroupOf(current.nodes, blockId);
+      const gates = group ? gateNodesOf(group, current.nodes) : [];
+      if (gates.length === 0) continue;
+      opened.inner.delete(blockId);
+      for (let k = 0; k < info.section.gates.length; k++) {
+        steps[info.start + k] = gates[k] ?? gates.at(-1)!;
+      }
+    }
     // go inside the building block if the highlighted steps all lie in it
     const targets = new Set(steps.slice(clicked.from, clicked.to + 1));
     const [only] = [...targets];

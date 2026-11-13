@@ -4,6 +4,8 @@ import { useStore } from "@/config/store";
 import { shallow } from "zustand/shallow";
 import { cn } from "@/lib/utils";
 import OutputPort from "../utils/outputPort";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
+import { circuitBlockedReason } from "@/lib/circuitReadiness";
 import { quantumConstructColor } from "@/constants";
 import { awareness } from "@/yjs"; // Imported the room awareness configuration
 
@@ -135,6 +137,13 @@ export const GroverDiffuserNode = memo((node: Node) => {
                   <span className="font-semibold text-sm">Grover Diffuser</span>
                 )}
               </div>
+              <CircuitLevelButton
+                nodeId={id}
+                label="diffusion operator"
+                disabledReason={
+                  circuitBlockedReason(node, nodes, edges) ?? undefined
+                }
+              />
             </div>
           </div>
 

@@ -4,6 +4,8 @@ import { useStore } from "@/config/store";
 import { shallow } from "zustand/shallow";
 import { cn } from "@/lib/utils";
 import OutputPort from "../utils/outputPort";
+import { CircuitLevelButton } from "../utils/circuitLevelButton";
+import { circuitBlockedReason } from "@/lib/circuitReadiness";
 import { AlertCircle } from "lucide-react";
 import { quantumConstructColor } from "@/constants";
 import { awareness } from "@/yjs"; // Ensure this import points to your Yjs awareness configuration
@@ -290,6 +292,13 @@ export const UniversalOracleNode = memo((node: Node) => {
                   </span>
                 )}
               </div>
+              <CircuitLevelButton
+                nodeId={id}
+                label="oracle"
+                disabledReason={
+                  circuitBlockedReason(node, nodes, edges) ?? undefined
+                }
+              />
             </div>
           </div>
 

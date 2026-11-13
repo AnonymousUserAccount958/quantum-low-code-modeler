@@ -119,29 +119,57 @@ export const startCompile = async (
     }
   });
 
-  function resolveRegisterSize(
-    nodeId: string,
-    visited = new Set<string>(),
-  ): number {
-    if (visited.has(nodeId)) return 3;
+  // Number of qubits of the register a node receives, e.g. for an oracle or diffuser,
+  // which are generated for a fixed size. The register can come from a block with a
+  // size (Prepare State), but also from the circuit level of a block (gates joined by a
+  // Merger), so a Merger counts the qubits of all its inputs and a gate or qubit wire is
+  // one qubit. Falls back to 3 only when nothing tells the size.
+  const isQuantumTarget = (e: Edge) =>
+    !e.targetHandle || !e.targetHandle.startsWith("classical");
+
+  function outputSize(nodeId: string, visited: Set<string>): number | null {
+    if (visited.has(nodeId)) return null;
     visited.add(nodeId);
-
-    const incomingEdge = edges.find((e) => e.target === nodeId);
-
-    if (!incomingEdge) {
-      const selfNode = nodes.find((n) => n.id === nodeId);
-      if (selfNode?.data?.size) return parseInt(selfNode.data.size, 10);
-      return 3;
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node) return null;
+    const size = parseInt(String(node.data?.size ?? ""), 10);
+    if (Number.isInteger(size) && size > 0) return size;
+    if (node.type === consts.MergerNode) {
+      const inputs = edges.filter(
+        (e) => e.target === nodeId && isQuantumTarget(e),
+      );
+      let total = 0;
+      for (const e of inputs) {
+        const s = outputSize(e.source, new Set(visited));
+        if (s === null) return null;
+        total += s;
+      }
+      return total > 0 ? total : null;
     }
-
-    const sourceNode = nodes.find((n) => n.id === incomingEdge.source);
-    if (!sourceNode) return 3;
-
-    if (sourceNode.data?.size) {
-      return parseInt(sourceNode.data.size, 10);
+    // one qubit per wire: a qubit, a gate wire, an output of a Splitter
+    if (
+      node.type === consts.SplitterNode ||
+      node.type === "gateNode" ||
+      node.type === "qubitNode"
+    ) {
+      return 1;
     }
+    return inputSize(nodeId, visited);
+  }
 
-    return resolveRegisterSize(sourceNode.id, visited);
+  function inputSize(nodeId: string, visited: Set<string>): number | null {
+    const incoming = edges.find(
+      (e) => e.target === nodeId && isQuantumTarget(e),
+    );
+    return incoming ? outputSize(incoming.source, visited) : null;
+  }
+
+  function resolveRegisterSize(nodeId: string): number {
+    const fromInput = inputSize(nodeId, new Set([nodeId]));
+    if (fromInput) return fromInput;
+    const selfNode = nodes.find((n) => n.id === nodeId);
+    const own = parseInt(String(selfNode?.data?.size ?? ""), 10);
+    return Number.isInteger(own) && own > 0 ? own : 3;
   }
 
   return await fetch(new URL("/compile", baseUrl), {
@@ -256,6 +284,21 @@ export const startCompile = async (
               type: "encode",
               encoding: "amplitude",
               bounds: parseFloat(node.data.bound),
+            };
+          // the palette has these encodings as blocks of their own as well
+          case "Matrix Encoding":
+            return {
+              id: node.id,
+              type: "encode",
+              encoding: "matrix",
+              bounds: parseFloat(node.data.bound) || 0,
+            };
+          case "Schmidt Decomposition":
+            return {
+              id: node.id,
+              type: "encode",
+              encoding: "schmidt",
+              bounds: parseFloat(node.data.bound) || 0,
             };
 
           case "Prepare State":

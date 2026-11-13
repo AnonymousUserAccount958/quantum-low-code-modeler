@@ -6,6 +6,8 @@ import { findDuplicateOutputIdentifiers } from "../utils/utils";
 import { AlertCircle } from "lucide-react";
 import OutputPort from "../utils/outputPort";
 import { awareness } from "@/yjs";
+import { encodingPlaceholder } from "@/lib/dataTypeRules";
+import { qaoaPlaceholder } from "@/lib/qaoaRules";
 
 const selector = (state: {
   selectedNode: Node | null;
@@ -45,6 +47,12 @@ export const DataTypeNode = memo((node: Node) => {
     node.data.durationUnit || "s",
   );
   const { data, selected } = node;
+  // connected to an encoding: an example it can encode (e.g. a normalized array for
+  // Angle Encoding) as the placeholder, see dataTypeRules.ts
+  // connected to a QAOA block: a valid graph / one angle per layer, see qaoaRules.ts
+  const encodingExample =
+    encodingPlaceholder(node as Node, nodes, edges) ??
+    qaoaPlaceholder(node as Node, nodes, edges);
 
   const changeValue = (e) => {
     const newValue = e.target.value;
@@ -389,7 +397,7 @@ export const DataTypeNode = memo((node: Node) => {
                 type="text"
                 className={`input-classical-focus p-1 text-black opacity-75 text-sm rounded-full w-24 text-center border-2 transition-all duration-200 ${valueError ? "bg-red-500 border-red-500" : "bg-white border-orange-300"}`}
                 value={node.data.value || value}
-                placeholder="1,2,3"
+                placeholder={encodingExample ?? "1,2,3"}
                 onChange={changeValue}
               />
             ) : data.dataType === "angle" ? (
@@ -452,7 +460,7 @@ export const DataTypeNode = memo((node: Node) => {
                 type="text"
                 className={`input-classical-focus p-1 text-black opacity-75 text-sm rounded-full w-20 text-center border-2 ${valueError ? "bg-red-500 border-red-500" : "bg-white border-orange-300"}`}
                 value={node.data.value || value}
-                placeholder="0"
+                placeholder={encodingExample ?? "0"}
                 onChange={changeValue}
               />
             )}

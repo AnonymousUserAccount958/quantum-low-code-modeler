@@ -29,6 +29,8 @@ import Toolbar from "./components/toolbar";
 import { nodesConfig, tutorial } from "./config/site";
 import { appendHistory, useStore } from "./config/store";
 import { expandsWithoutQasm, openBlock } from "./lib/circuitLevel";
+import { SHOW_CIRCUIT_LEVEL_EVENT } from "./components/utils/circuitLevelButton";
+import { circuitBlockedReason } from "./lib/circuitReadiness";
 import { analyzeComponents } from "./lib/componentAnalyzer";
 import { useShallow } from "zustand/react/shallow";
 import { findNodeDefinition, handleDragOver } from "./lib/utils";
@@ -95,7 +97,11 @@ import DomainProfileModal, {
 } from "./components/modals/domainProfileModal";
 import { PatternSelectionModal } from "./components/modals/patternSelectionModal";
 import { PatternImplementationSelectionModal } from "./components/modals/patternImplementationSelectionModal";
-import { groupSelectedNodes, handleNodeDropOnGroup } from "./lib/groupHandler";
+import {
+  groupAt,
+  groupSelectedNodes,
+  handleNodeDropOnGroup,
+} from "./lib/groupHandler";
 import UserCountPanel from "./components/modals/userAwareness";
 import VersioningPanel from "./components/modals/versioningModal";
 import { EdgeChange } from "@xyflow/react";
@@ -592,16 +598,23 @@ function App() {
     const edges: Edge[] = reactFlowInstance.getEdges();
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return;
+    // e.g. an oracle without marked states, a QAOA block with missing inputs
+    const blocked = circuitBlockedReason(node, nodes, edges);
+    if (blocked) {
+      showToast(blocked, "error");
+      return;
+    }
     let qasm: string | null = null;
     if (!expandsWithoutQasm(node, nodes, edges)) {
       showToast("Compiling the model to get the circuit of this block…", "info");
       try {
+        // the gates of the block are read from OpenQASM, never from a workflow
         const components = await analyzeComponents(
           nodes,
           edges,
           lowcodeBackendEndpoint,
           metadata,
-          compilationTarget,
+          "qasm",
         );
         qasm =
           components.find((c) => c.qasm?.includes(`Start node ${nodeId}`))
@@ -629,6 +642,22 @@ function App() {
     reactFlowInstance.setNodes(result.nodes);
     reactFlowInstance.setEdges(result.edges);
   };
+
+  // the "▸ Circuit" button of a block (e.g. Grover Oracle, Grover Diffuser)
+  const showCircuitLevelRef = useRef(showCircuitLevel);
+  showCircuitLevelRef.current = showCircuitLevel;
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const { nodeId, blockedReason } =
+        (e as CustomEvent<{ nodeId: string; blockedReason?: string }>)
+          .detail ?? {};
+      if (blockedReason) showToast(blockedReason, "error");
+      else if (nodeId) showCircuitLevelRef.current(nodeId);
+    };
+    window.addEventListener(SHOW_CIRCUIT_LEVEL_EVENT, onRequest);
+    return () =>
+      window.removeEventListener(SHOW_CIRCUIT_LEVEL_EVENT, onRequest);
+  }, []);
 
   const [validationResult, setValidationResult] = useState({
     warnings: [],
@@ -1294,13 +1323,20 @@ If none apply, return { "algorithms": [] }.
     return false; // No node with multiple mappings found
   }
   // Returns the compiled OpenQASM, or null when the compilation failed.
-  const sendToBackend = async (): Promise<string | null> => {
+  // `targetOverride`: the OpenQASM editor, Math Mode and the circuit level always need
+  // OpenQASM, whatever was last chosen in the Send dialog (a click event passed by the
+  // dialog's button is ignored)
+  const sendToBackend = async (
+    targetOverride?: unknown,
+  ): Promise<string | null> => {
+    const target =
+      typeof targetOverride === "string" ? targetOverride : compilationTarget;
     //setLoading(true);
     setModalOpen(false);
     setProcessingModalOpen(true);
 
     let id = `flow-${Date.now()}`;
-    if (compilationTarget === "qasm") {
+    if (target === "qasm") {
       showToast("QASM request for model " + id + " submitted.", "info");
     } else {
       showToast("Workflow request for model " + id + " submitted.", "info");
@@ -1415,7 +1451,7 @@ If none apply, return { "algorithms": [] }.
           }
           return expandedEdges;
         })(),
-        compilationTarget,
+        target,
       );
       console.log(response);
 
@@ -3300,6 +3336,23 @@ If none apply, return { "algorithms": [] }.
         },
       };
 
+      // dropped into a group (e.g. into the circuit level of an oracle): the node
+      // becomes part of the innermost group there, so it can be wired to its gates
+      if (customPosition) {
+        const current = reactFlowInstance.getNodes();
+        const group = groupAt(current, position.x + 40, position.y + 40);
+        if (group) {
+          const origin = group.positionAbsolute ?? group.position;
+          Object.assign(newNode, {
+            parentNode: group.id,
+            position: {
+              x: Math.max(0, position.x - origin.x),
+              y: Math.max(40, position.y - origin.y),
+            },
+          });
+        }
+      }
+
       console.log("CREATED NODE", newNode);
 
       // Update local Zustand Store
@@ -4323,6 +4376,11 @@ VALUES ('${ids.fileId}', '${ids.fileImplementationId}');
 
       // Keep your normal single-user state if necessary
       setSelectedNode(node);
+      // the panel shows the node in the OpenQASM editor and Math Mode, on every click
+      // (also when the same node is clicked again)
+      window.dispatchEvent(
+        new CustomEvent("lcm-node-click", { detail: { nodeId: node.id } }),
+      );
     },
     [collaborationModeOn, awareness, setSelectedNode],
   );
@@ -6486,10 +6544,11 @@ VALUES ('${ids.fileId}', '${ids.fileImplementationId}');
                 mathMode={mathMode}
                 onWidthChange={setPanelWidth}
                 backendUrl={lowcodeBackendEndpoint}
-                compilationTarget={compilationTarget}
+                // the panel shows OpenQASM (editor, Math Mode): never compile it to a workflow
+                compilationTarget="qasm"
                 qasmCode={openqasmCode}
                 onGetCircuitSvg={getCircuitSvg}
-                onSendToBackend={sendToBackend}
+                onSendToBackend={() => sendToBackend("qasm")}
                 onGetModel={getModel}
                 qasmEditorMode={qasmEditorMode}
               />
